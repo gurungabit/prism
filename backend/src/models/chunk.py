@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 
 class ChunkMetadata(BaseModel):
-    source_platform: Literal["gitlab", "sharepoint", "excel", "onenote"]
+    source_platform: Literal["gitlab", "gitlab_api", "sharepoint", "excel", "onenote"]
     source_path: str
     source_url: str = ""
     document_title: str

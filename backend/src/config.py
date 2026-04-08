@@ -18,6 +18,10 @@ class Settings(BaseSettings):
 
     data_dir: str = "./data"
 
+    gitlab_token: str = ""
+    gitlab_base_url: str = "https://gitlab.com"
+    gitlab_group_ids: str = ""  # comma-separated group IDs or full-paths
+
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_dimension: int = 384
 

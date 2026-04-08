@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 
 class DocumentRef(BaseModel):
-    source_platform: Literal["gitlab", "sharepoint", "excel", "onenote"]
+    source_platform: Literal["gitlab", "gitlab_api", "sharepoint", "excel", "onenote"]
     source_path: str
     file_type: str = ""
 

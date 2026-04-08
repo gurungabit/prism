@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.config import settings
-from src.connectors.base import ConnectorRegistry
+from src.connectors.base import APIConnector, ConnectorRegistry
 from src.ingestion.chunker import chunk_document
 from src.ingestion.deduplicator import ChunkDeduplicator
 from src.ingestion.embedder import embed_chunks
@@ -72,6 +72,15 @@ class IngestionPipeline:
         return stats
 
     async def ingest_platform(self, platform: str, data_dir: str | None = None, force: bool = False) -> dict:
+        # Check if this is an API connector first
+        api_connector = ConnectorRegistry.create_api(platform)
+        if api_connector is not None:
+            stats = await self._ingest_platform(api_connector, force)
+            stats["team_cleanup"] = await self.graph_builder.sanitize_team_nodes()
+            if hasattr(api_connector, "close"):
+                api_connector.close()
+            return stats
+
         data_dir = data_dir or settings.data_dir
         connector_cls = ConnectorRegistry.get(platform)
         if not connector_cls:
