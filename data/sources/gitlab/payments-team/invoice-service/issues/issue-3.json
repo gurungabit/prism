@@ -1,0 +1,16 @@
+{
+  "title": "Upgrade invoice-service dependencies",
+  "body": "We need to improve invoice-service by implementing this change. This is part of the Payments Team's quarterly goals.",
+  "state": "open",
+  "labels": [
+    "tech-debt",
+    "security"
+  ],
+  "assignees": [
+    {
+      "name": "engineer-15"
+    }
+  ],
+  "created_at": "2026-02-22T16:53:42.553405",
+  "updated_at": "2026-03-26T16:53:42.553406"
+}

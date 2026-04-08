@@ -1,0 +1,15 @@
+{
+  "title": "Implement health check improvements for logging-service",
+  "body": "We need to improve logging-service by implementing this change. This is part of the Infrastructure Team's quarterly goals.",
+  "state": "closed",
+  "labels": [
+    "bug"
+  ],
+  "assignees": [
+    {
+      "name": "engineer-11"
+    }
+  ],
+  "created_at": "2025-11-04T16:53:42.561092",
+  "updated_at": "2025-11-08T16:53:42.561093"
+}

@@ -1,0 +1,16 @@
+{
+  "title": "Optimize api-gateway database queries",
+  "body": "We need to improve api-gateway by implementing this change. This is part of the Platform Team's quarterly goals.",
+  "state": "open",
+  "labels": [
+    "enhancement",
+    "security"
+  ],
+  "assignees": [
+    {
+      "name": "engineer-10"
+    }
+  ],
+  "created_at": "2025-11-26T16:53:42.548923",
+  "updated_at": "2025-12-04T16:53:42.548925"
+}

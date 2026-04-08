@@ -1,0 +1,17 @@
+{
+  "title": "Add rate limiting to cert-manager",
+  "body": "We need to improve cert-manager by implementing this change. This is part of the Security Team's quarterly goals.",
+  "state": "open",
+  "labels": [
+    "bug",
+    "tech-debt",
+    "performance"
+  ],
+  "assignees": [
+    {
+      "name": "engineer-9"
+    }
+  ],
+  "created_at": "2026-04-01T16:53:42.550945",
+  "updated_at": "2026-04-02T16:53:42.550946"
+}

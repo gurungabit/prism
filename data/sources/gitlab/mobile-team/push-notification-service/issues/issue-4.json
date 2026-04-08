@@ -1,0 +1,16 @@
+{
+  "title": "Refactor push-notification-service error handling",
+  "body": "We need to improve push-notification-service by implementing this change. This is part of the Mobile Team's quarterly goals.",
+  "state": "closed",
+  "labels": [
+    "bug",
+    "enhancement"
+  ],
+  "assignees": [
+    {
+      "name": "engineer-5"
+    }
+  ],
+  "created_at": "2026-01-23T16:53:42.558879",
+  "updated_at": "2026-02-23T16:53:42.558880"
+}

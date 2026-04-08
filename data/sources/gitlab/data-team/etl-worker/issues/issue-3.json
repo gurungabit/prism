@@ -1,0 +1,17 @@
+{
+  "title": "Add caching layer to etl-worker",
+  "body": "We need to improve etl-worker by implementing this change. This is part of the Data Team's quarterly goals.",
+  "state": "closed",
+  "labels": [
+    "enhancement",
+    "tech-debt",
+    "security"
+  ],
+  "assignees": [
+    {
+      "name": "engineer-12"
+    }
+  ],
+  "created_at": "2025-10-19T16:53:42.557758",
+  "updated_at": "2026-01-10T16:53:42.557759"
+}

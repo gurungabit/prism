@@ -1,0 +1,16 @@
+{
+  "title": "Refactor test-framework error handling",
+  "body": "We need to improve test-framework by implementing this change. This is part of the QA Team's quarterly goals.",
+  "state": "open",
+  "labels": [
+    "performance",
+    "enhancement"
+  ],
+  "assignees": [
+    {
+      "name": "engineer-6"
+    }
+  ],
+  "created_at": "2026-01-31T16:53:42.562340",
+  "updated_at": "2026-03-16T16:53:42.562342"
+}
