@@ -72,29 +72,6 @@ export function submitFeedback(
   );
 }
 
-// ── Ingestion ─────────────────────────────────────────
-
-export function triggerIngest(force = false) {
-  return request<{ status: string; message: string }>(
-    `/api/ingest?force=${force}`,
-    { method: "POST" },
-  );
-}
-
-export function triggerPlatformIngest(platform: string, force = false) {
-  return request<{ status: string; platform: string }>(
-    `/api/ingest/${platform}?force=${force}`,
-    { method: "POST" },
-  );
-}
-
-export function triggerFullIngest() {
-  return request<{ status: string; message: string }>(
-    "/api/ingest/full",
-    { method: "POST" },
-  );
-}
-
 // ── Search ────────────────────────────────────────────
 
 export interface SearchParams {
@@ -103,6 +80,11 @@ export interface SearchParams {
   page?: number;
   page_size?: number;
   top_k?: number;
+  scope?: {
+    org_id?: string;
+    team_ids?: string[];
+    service_ids?: string[];
+  };
 }
 
 export interface SearchResult {
@@ -113,6 +95,9 @@ export interface SearchResult {
   document_title: string;
   doc_type: string;
   platform: string;
+  org_id?: string | null;
+  team_id?: string | null;
+  service_id?: string | null;
 }
 
 export function searchDocuments(params: SearchParams) {
@@ -133,6 +118,8 @@ export function searchDocuments(params: SearchParams) {
 
 export interface TeamData {
   team: string;
+  team_id?: string;
+  org_id?: string;
   description?: string;
   services: string[];
 }
@@ -155,10 +142,6 @@ export function getDependencies(serviceName: string, depth = 2) {
   return request<Record<string, unknown>>(
     `/api/graph/dependencies/${serviceName}?depth=${depth}`,
   );
-}
-
-export function getConflicts() {
-  return request<{ conflicts: unknown[] }>("/api/graph/conflicts");
 }
 
 // ── Health ────────────────────────────────────────────
@@ -190,7 +173,139 @@ export function deleteAnalysis(analysisId: string) {
   );
 }
 
-// ── Sources listing ──────────────────────────────────
+// ── Catalog: orgs / teams / services ─────────────────
+
+export interface Organization {
+  id: string;
+  name: string;
+  created_at: string;
+}
+
+export interface Team {
+  id: string;
+  org_id: string;
+  name: string;
+  description: string;
+  created_at: string;
+}
+
+export interface Service {
+  id: string;
+  team_id: string;
+  name: string;
+  repo_url: string;
+  description: string;
+  created_at: string;
+}
+
+export function listOrgs() {
+  return request<{ orgs: Organization[] }>("/api/orgs");
+}
+
+export function getOrg(orgId: string) {
+  return request<Organization>(`/api/orgs/${orgId}`);
+}
+
+export function createOrg(name: string) {
+  return request<Organization>("/api/orgs", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function updateOrg(orgId: string, name: string) {
+  return request<Organization>(`/api/orgs/${orgId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function deleteOrg(orgId: string) {
+  return request<{ status: string }>(`/api/orgs/${orgId}`, { method: "DELETE" });
+}
+
+export function listTeamsForOrg(orgId: string) {
+  return request<{ teams: Team[] }>(`/api/orgs/${orgId}/teams`);
+}
+
+export function getTeam(teamId: string) {
+  return request<Team>(`/api/teams/${teamId}`);
+}
+
+export function createTeam(orgId: string, body: { name: string; description?: string }) {
+  return request<Team>(`/api/orgs/${orgId}/teams`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateTeam(
+  teamId: string,
+  body: { name?: string; description?: string },
+) {
+  return request<Team>(`/api/teams/${teamId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteTeam(teamId: string) {
+  return request<{ status: string }>(`/api/teams/${teamId}`, { method: "DELETE" });
+}
+
+export function listServicesForTeam(teamId: string) {
+  return request<{ services: Service[] }>(`/api/teams/${teamId}/services`);
+}
+
+export function getServiceById(serviceId: string) {
+  return request<Service>(`/api/services/${serviceId}`);
+}
+
+export function createService(
+  teamId: string,
+  body: { name: string; repo_url?: string; description?: string },
+) {
+  return request<Service>(`/api/teams/${teamId}/services`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateService(
+  serviceId: string,
+  body: { name?: string; repo_url?: string; description?: string },
+) {
+  return request<Service>(`/api/services/${serviceId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteService(serviceId: string) {
+  return request<{ status: string }>(`/api/services/${serviceId}`, { method: "DELETE" });
+}
+
+// ── Catalog: sources ─────────────────────────────────
+
+export type SourceScope = "org" | "team" | "service";
+export type SourceKind = "gitlab" | "sharepoint" | "excel" | "onenote";
+export type SourceStatus = "pending" | "syncing" | "ready" | "error";
+
+export interface DeclaredSource {
+  id: string;
+  org_id: string | null;
+  team_id: string | null;
+  service_id: string | null;
+  kind: SourceKind;
+  name: string;
+  config: Record<string, unknown>;
+  secret_ref: string | null;
+  status: SourceStatus;
+  last_ingested_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  document_count?: number;
+}
 
 export interface SourceDocument {
   document_id: string;
@@ -198,17 +313,158 @@ export interface SourceDocument {
   chunk_count: number;
   status: string;
   last_ingested_at: string | null;
+  source_platform: string;
+  title: string | null;
+  source_url: string | null;
 }
 
-export interface SourceGroup {
-  platform: string;
-  document_count: number;
-  last_ingested: string | null;
-  documents: SourceDocument[];
+export function listDeclaredSources(params?: {
+  orgId?: string;
+  teamId?: string;
+  serviceId?: string;
+}) {
+  const query = new URLSearchParams();
+  if (params?.orgId) query.set("org_id", params.orgId);
+  if (params?.teamId) query.set("team_id", params.teamId);
+  if (params?.serviceId) query.set("service_id", params.serviceId);
+  const qs = query.toString();
+  return request<{ sources: DeclaredSource[]; total: number }>(
+    `/api/sources${qs ? `?${qs}` : ""}`,
+  );
 }
 
-export function getSourcesList() {
-  return request<{ sources: SourceGroup[]; total: number }>("/api/sources");
+export function getDeclaredSource(sourceId: string) {
+  return request<DeclaredSource & { documents: SourceDocument[] }>(
+    `/api/sources/${sourceId}`,
+  );
+}
+
+export function getSourceStatus(sourceId: string) {
+  return request<{
+    source_id: string;
+    status: SourceStatus;
+    last_ingested_at: string | null;
+    last_error: string | null;
+  }>(`/api/sources/${sourceId}/status`);
+}
+
+export interface CreateSourceBody {
+  scope: SourceScope;
+  scope_id: string;
+  kind: SourceKind;
+  name: string;
+  config: Record<string, unknown>;
+  token?: string;
+}
+
+export function createSource(body: CreateSourceBody) {
+  return request<DeclaredSource>("/api/sources", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateSource(
+  sourceId: string,
+  body: { name?: string; config?: Record<string, unknown>; token?: string },
+) {
+  return request<DeclaredSource>(`/api/sources/${sourceId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteSource(sourceId: string) {
+  return request<{ status: string }>(`/api/sources/${sourceId}`, { method: "DELETE" });
+}
+
+export function triggerSourceIngest(sourceId: string, force = false) {
+  return request<{ status: string; source_id: string; force: boolean }>(
+    `/api/sources/${sourceId}/ingest?force=${force}`,
+    { method: "POST" },
+  );
+}
+
+export interface ValidateSourceBody {
+  kind: SourceKind;
+  config: Record<string, unknown>;
+  token?: string;
+}
+
+export function validateSource(body: ValidateSourceBody) {
+  return request<{
+    ok: boolean;
+    kind: SourceKind;
+    projects?: Array<{
+      id: number;
+      path_with_namespace: string;
+      web_url: string;
+      default_branch: string | null;
+    }>;
+    total_projects?: number;
+    path?: string;
+  }>("/api/sources/validate", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export interface GitLabProject {
+  id: number;
+  path_with_namespace: string;
+  name: string;
+  web_url: string;
+  default_branch: string | null;
+}
+
+export interface SearchGitlabProjectsBody {
+  base_url?: string;
+  token?: string;
+  q?: string;
+  page?: number;
+  per_page?: number;
+}
+
+export interface OrganizationGraphResponse {
+  orgs: Array<{ id: string; name: string; created_at: string }>;
+  teams: Array<{
+    id: string;
+    org_id: string;
+    name: string;
+    description: string;
+    created_at: string;
+  }>;
+  services: Array<{
+    id: string;
+    team_id: string;
+    name: string;
+    repo_url: string;
+    description: string;
+    created_at: string;
+  }>;
+  dependencies: Array<{
+    from_service_id: string;
+    to_service_id: string;
+    from_service: string;
+    to_service: string;
+    source: string;
+  }>;
+}
+
+export function getOrganizationGraph() {
+  return request<OrganizationGraphResponse>("/api/organization/graph");
+}
+
+export function searchGitlabProjects(body: SearchGitlabProjectsBody) {
+  return request<{
+    projects: GitLabProject[];
+    page: number;
+    per_page: number;
+    has_more: boolean;
+  }>("/api/gitlab/projects/search", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 // ── Chat ─────────────────────────────────────────────

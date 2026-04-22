@@ -1,61 +1,540 @@
+"""GitLab connector (Phase 1): fetch knowledge documents from GitLab via API.
+
+Accepts a ``SourceConfig`` with one of the two shapes documented in the plan:
+
+    # Whole group (recursively pulls projects, including subgroups by default)
+    { "kind": "gitlab", "group_path": "platform-team", "include_subgroups": true }
+
+    # Single project
+    { "kind": "gitlab", "project_path": "platform-team/api-gateway", "ref": "main" }
+
+What gets fetched per project:
+
+- ``README.md`` / ``README.rst`` / ``README.txt``
+- Everything under ``docs/``, ``runbooks/``, ``architecture/``
+- ``CODEOWNERS`` (stored for later analysis; not used to infer ownership)
+- Wiki pages via the GitLab wiki API (opt out with ``include_wiki: false``)
+- Project metadata (becomes the document title for READMEs)
+
+Files that aren't knowledge content (``.gitlab-ci.yml``, lockfiles, binaries)
+are skipped.
+
+Design notes:
+- Uses the synchronous ``httpx.Client`` because the surrounding pipeline is
+  still synchronous during the parse/embed phases. Making it async would
+  require threading it through ``_ingest_platform`` and the embedder.
+- A single ``Client`` is created per connector instance and closed via the
+  ``aclose`` hook. That's ~1 client per ingest run.
+- Hard cap on projects / docs per run comes from ``settings``. Prevents
+  "fetch 5000-project group" surprises in Phase 1.
+"""
+
 from __future__ import annotations
 
-import json
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
+from typing import Any
+from urllib.parse import quote
 
-from src.connectors.base import Connector, ConnectorRegistry
+import httpx
+
+from src.config import settings
+from src.connectors.base import Connector, ConnectorRegistry, SourceConfig
 from src.models.document import DocumentMetadata, DocumentRef, RawDocument
+from src.observability.logging import get_logger
 
-GITLAB_EXTENSIONS = {".md", ".txt", ".py", ".js", ".ts", ".yaml", ".yml", ".json", ".rst"}
+log = get_logger("gitlab_connector")
+
+
+# Paths we consider "knowledge content" inside each project. Matched by
+# case-insensitive prefix or direct filename equality. Anything outside this
+# list is skipped even if it's a markdown file (e.g. node_modules/*.md).
+KNOWLEDGE_ROOT_DIRS = ("docs/", "runbooks/", "architecture/")
+KNOWLEDGE_ROOT_FILES = (
+    "readme.md",
+    "readme.rst",
+    "readme.txt",
+    "codeowners",
+)
+# Allowed extensions inside the KNOWLEDGE_ROOT_DIRS. Keeps the fetch surface
+# small: a README.md is knowledge; package-lock.json under docs/ is not.
+KNOWLEDGE_EXTENSIONS = (".md", ".rst", ".txt", ".markdown")
+
+# Sentinel used in the ref slot of ``source_path`` to mark a wiki page. Wiki
+# pages aren't tied to a branch, so we hijack the ref field rather than adding
+# a new composite delimiter. Double-underscore prefix/suffix makes accidental
+# collisions with real branch names vanishingly unlikely.
+WIKI_REF_SENTINEL = "__wiki__"
+
+# Mapping from GitLab's wiki ``format`` field to our file_type extension. The
+# downstream parser uses file_type to pick a reader; markdown wikis get .md,
+# asciidoc gets .adoc, etc. Unknown formats fall back to .md since markdown is
+# the default on gitlab.com.
+_WIKI_FORMAT_TO_EXT = {
+    "markdown": ".md",
+    "asciidoc": ".adoc",
+    "rdoc": ".rdoc",
+    "org": ".org",
+    "creole": ".creole",
+}
+
+
+class GitLabAPIError(RuntimeError):
+    """Raised when the GitLab API returns a non-2xx response we can't recover from."""
 
 
 class GitLabConnector(Connector):
     platform = "gitlab"
 
+    def __init__(self, source: SourceConfig) -> None:
+        super().__init__(source)
+
+        base_url = source.config.get("base_url") or settings.gitlab_base_url
+        headers = {"User-Agent": "prism-ingest/0.1"}
+        if source.token:
+            headers["PRIVATE-TOKEN"] = source.token
+
+        self._client = httpx.Client(
+            base_url=base_url.rstrip("/"),
+            headers=headers,
+            timeout=settings.gitlab_request_timeout_seconds,
+        )
+
+        # Cached mapping so fetch_document doesn't re-resolve project IDs.
+        # Populated lazily by list_documents().
+        self._project_cache: dict[str, dict[str, Any]] = {}
+
+    # ---- lifecycle ----
+
+    def close(self) -> None:
+        self._client.close()
+
+    async def aclose(self) -> None:
+        self.close()
+
+    # ---- public API expected by the pipeline ----
+
     def list_documents(self) -> list[DocumentRef]:
-        refs = []
-        for path in self.base_dir.rglob("*"):
-            if not path.is_file():
-                continue
-            if path.suffix.lower() in GITLAB_EXTENSIONS or path.name.lower() in {"readme", "changelog"}:
-                refs.append(
-                    DocumentRef(
-                        source_platform="gitlab",
-                        source_path=str(path.relative_to(self.base_dir)),
-                        file_type=path.suffix.lower() or ".txt",
-                    )
+        projects = self._resolve_projects()
+        if not projects:
+            log.warning("gitlab_no_projects_found", source=self.source.name)
+            return []
+
+        refs: list[DocumentRef] = []
+        max_docs_per_project = settings.gitlab_max_docs_per_project
+        include_wiki = bool(self.source.config.get("include_wiki", True))
+
+        for project in projects:
+            project_path = project["path_with_namespace"]
+            ref = self.source.config.get("ref") or project.get("default_branch") or "main"
+
+            # Cache the project payload -- fetch_document needs the ID and
+            # web URL later, and re-hitting /projects/:path is wasteful.
+            self._project_cache[project_path] = project
+
+            try:
+                doc_paths = self._list_knowledge_paths(project["id"], ref)
+            except Exception as e:  # noqa: BLE001
+                log.error(
+                    "gitlab_list_paths_failed",
+                    project=project_path,
+                    error=str(e)[:200],
                 )
+                doc_paths = []
+
+            project_refs: list[DocumentRef] = [
+                DocumentRef(
+                    source_platform="gitlab",
+                    # Composite path namespaces docs by project so the
+                    # registry's ``source_path`` remains globally unique
+                    # even when two projects both have README.md.
+                    source_path=f"{project_path}@{ref}:{path}",
+                    file_type=_extension_of(path),
+                )
+                for path in doc_paths
+            ]
+
+            if include_wiki and project.get("wiki_enabled", True):
+                wiki_pages = self._list_wiki_pages(project["id"])
+                for page in wiki_pages:
+                    slug = page.get("slug")
+                    if not slug:
+                        continue
+                    file_type = _WIKI_FORMAT_TO_EXT.get(page.get("format") or "", ".md")
+                    project_refs.append(
+                        DocumentRef(
+                            source_platform="gitlab",
+                            # The sentinel ref slot marks this as a wiki page;
+                            # fetch_document dispatches on it. ``wiki/`` in the
+                            # inner path also ensures the parser's doc_type
+                            # detector classifies the chunk as ``wiki``.
+                            source_path=f"{project_path}@{WIKI_REF_SENTINEL}:wiki/{slug}",
+                            file_type=file_type,
+                        )
+                    )
+
+            if len(project_refs) > max_docs_per_project:
+                log.warning(
+                    "gitlab_project_doc_cap_applied",
+                    project=project_path,
+                    cap=max_docs_per_project,
+                    found=len(project_refs),
+                )
+                project_refs = project_refs[:max_docs_per_project]
+
+            refs.extend(project_refs)
+
+        log.info(
+            "gitlab_listed",
+            source=self.source.name,
+            projects=len(projects),
+            documents=len(refs),
+        )
         return refs
 
     def fetch_document(self, ref: DocumentRef) -> RawDocument:
-        file_path = self.base_dir / ref.source_path
-        content = file_path.read_text(encoding="utf-8", errors="replace")
+        project_path, gitref, inner_path = _parse_source_path(ref.source_path)
+        project = self._project_cache.get(project_path) or self._resolve_single_project(project_path)
+        project_id = project["id"]
 
-        metadata = DocumentMetadata(
-            title=_extract_title(file_path, content),
-            last_modified=datetime.fromtimestamp(file_path.stat().st_mtime),
+        if gitref == WIKI_REF_SENTINEL:
+            return self._build_wiki_document(ref, project, inner_path)
+
+        content = self._fetch_file(project_id, inner_path, gitref)
+        last_modified = self._last_commit_time(project_id, inner_path, gitref) or _parse_gitlab_datetime(
+            project.get("last_activity_at")
         )
 
-        if file_path.suffix == ".json":
-            try:
-                data = json.loads(content)
-                metadata.title = data.get("title", metadata.title)
-                metadata.author = data.get("author", {}).get("name", "")
-                metadata.labels = data.get("labels", [])
-            except json.JSONDecodeError:
-                pass
+        title = _extract_title(inner_path, content) or project.get("name") or inner_path
+        web_url = project.get("web_url", "")
+        file_url = (
+            f"{web_url.rstrip('/')}/-/blob/{quote(gitref, safe='')}/{inner_path}"
+            if web_url
+            else ""
+        )
+
+        metadata = DocumentMetadata(
+            title=title,
+            last_modified=last_modified,
+            source_url=file_url,
+            labels=project.get("topics") or [],
+            extra={
+                "gitlab_project_id": project_id,
+                "gitlab_project_path": project_path,
+                "gitlab_ref": gitref,
+                "gitlab_web_url": web_url,
+                "gitlab_description": project.get("description") or "",
+            },
+        )
 
         return RawDocument(ref=ref, content=content, metadata=metadata)
 
+    def _build_wiki_document(
+        self,
+        ref: DocumentRef,
+        project: dict[str, Any],
+        inner_path: str,
+    ) -> RawDocument:
+        # inner_path is ``wiki/<slug>`` -- strip the prefix back to the slug
+        # GitLab expects on the wiki endpoint.
+        slug = inner_path.removeprefix("wiki/") if inner_path.startswith("wiki/") else inner_path
+        project_id = project["id"]
+        project_path = project["path_with_namespace"]
 
-def _extract_title(path: Path, content: str) -> str:
-    if path.suffix == ".md":
-        for line in content.split("\n")[:5]:
+        page = self._fetch_wiki_page(project_id, slug)
+        content = page.get("content") or ""
+        # Wiki API has no last-modified field. Fall back to project activity,
+        # matching the file-path code path's fallback.
+        last_modified = _parse_gitlab_datetime(project.get("last_activity_at"))
+
+        title = page.get("title") or _extract_title(slug, content) or slug
+        web_url = project.get("web_url", "")
+        wiki_url = (
+            f"{web_url.rstrip('/')}/-/wikis/{quote(slug, safe='/')}"
+            if web_url
+            else ""
+        )
+
+        metadata = DocumentMetadata(
+            title=title,
+            last_modified=last_modified,
+            source_url=wiki_url,
+            labels=project.get("topics") or [],
+            extra={
+                "gitlab_project_id": project_id,
+                "gitlab_project_path": project_path,
+                "gitlab_wiki_slug": slug,
+                "gitlab_wiki_format": page.get("format") or "markdown",
+                "gitlab_web_url": web_url,
+                "gitlab_description": project.get("description") or "",
+            },
+        )
+
+        return RawDocument(ref=ref, content=content, metadata=metadata)
+
+    # ---- GitLab API helpers ----
+
+    def _resolve_projects(self) -> list[dict[str, Any]]:
+        """Return the list of project dicts described by the source config.
+
+        Dispatches on ``project_path`` vs ``group_path``. Raises
+        ``GitLabAPIError`` if neither is set.
+        """
+        config = self.source.config
+
+        if config.get("project_path"):
+            return [self._resolve_single_project(str(config["project_path"]))]
+
+        if config.get("group_path"):
+            return self._list_group_projects(
+                str(config["group_path"]),
+                include_subgroups=bool(config.get("include_subgroups", True)),
+            )
+
+        raise GitLabAPIError(
+            "Source config must include either 'project_path' or 'group_path'"
+        )
+
+    def _resolve_single_project(self, project_path: str) -> dict[str, Any]:
+        encoded = quote(project_path, safe="")
+        response = self._client.get(f"/projects/{encoded}")
+        _raise_for_status(response, project_path)
+        return response.json()
+
+    def _list_group_projects(self, group_path: str, *, include_subgroups: bool) -> list[dict[str, Any]]:
+        encoded = quote(group_path, safe="")
+        endpoint = (
+            f"/groups/{encoded}/projects"
+            f"?include_subgroups={'true' if include_subgroups else 'false'}"
+            "&per_page=100&archived=false&order_by=last_activity_at"
+        )
+        return self._paginate(endpoint, limit=settings.gitlab_max_projects_per_source)
+
+    def _list_knowledge_paths(self, project_id: int, ref: str) -> list[str]:
+        """Walk the project's tree and return knowledge paths."""
+        endpoint = (
+            f"/projects/{project_id}/repository/tree"
+            f"?recursive=true&ref={quote(ref, safe='')}&per_page=100"
+        )
+        try:
+            entries = self._paginate(endpoint, limit=2000)
+        except GitLabAPIError as e:
+            # Empty repos or missing refs raise 404; treat as no docs.
+            log.info("gitlab_tree_unavailable", project_id=project_id, ref=ref, error=str(e)[:200])
+            return []
+
+        paths: list[str] = []
+        for entry in entries:
+            if entry.get("type") != "blob":
+                continue
+            path = entry.get("path", "")
+            if _is_knowledge_path(path):
+                paths.append(path)
+        paths.sort()
+        return paths
+
+    def search_projects(
+        self,
+        query: str = "",
+        *,
+        page: int = 1,
+        per_page: int = 20,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Search projects via ``/projects?search=…``.
+
+        With a token we add ``membership=true`` so callers only see their own
+        projects (otherwise gitlab.com returns the full public firehose).
+        ``simple=true`` trims the payload to just what the picker needs.
+
+        Returns ``(projects, has_more)``. ``has_more`` comes from the
+        ``X-Next-Page`` header -- GitLab dropped ``X-Total`` on gitlab.com for
+        large instances, so we can't rely on a total count.
+        """
+        params: list[str] = [
+            "simple=true",
+            "order_by=last_activity_at",
+            f"per_page={max(1, min(per_page, 100))}",
+            f"page={max(page, 1)}",
+        ]
+        if query:
+            params.append(f"search={quote(query, safe='')}")
+        if self.source.token:
+            params.append("membership=true")
+        endpoint = f"/projects?{'&'.join(params)}"
+
+        response = self._client.get(endpoint)
+        _raise_for_status(response, "project search")
+        batch = response.json()
+        if not isinstance(batch, list):
+            raise GitLabAPIError(
+                f"Expected list from /projects, got {type(batch).__name__}"
+            )
+        next_page = response.headers.get("x-next-page") or response.headers.get("X-Next-Page") or ""
+        has_more = bool(next_page.strip())
+        return batch, has_more
+
+    def _list_wiki_pages(self, project_id: int) -> list[dict[str, Any]]:
+        """Return wiki page stubs (slug, title, format). Content is NOT fetched here.
+
+        GitLab returns 403/404 when the wiki is disabled for a project or when
+        the caller lacks read_wiki scope. Those are expected on mixed repos,
+        so we log-and-return instead of letting the whole ingest fail.
+        """
+        endpoint = (
+            f"/projects/{project_id}/wikis"
+            f"?with_content=false&per_page=100"
+        )
+        try:
+            return self._paginate(endpoint, limit=settings.gitlab_max_docs_per_project)
+        except GitLabAPIError as e:
+            log.info("gitlab_wiki_unavailable", project_id=project_id, error=str(e)[:200])
+            return []
+
+    def _fetch_wiki_page(self, project_id: int, slug: str) -> dict[str, Any]:
+        encoded = quote(slug, safe="")
+        response = self._client.get(f"/projects/{project_id}/wikis/{encoded}")
+        _raise_for_status(response, f"wiki:{slug}")
+        return response.json()
+
+    def _fetch_file(self, project_id: int, path: str, ref: str) -> str:
+        encoded_path = quote(path, safe="")
+        endpoint = (
+            f"/projects/{project_id}/repository/files/{encoded_path}/raw"
+            f"?ref={quote(ref, safe='')}"
+        )
+        response = self._client.get(endpoint)
+        _raise_for_status(response, path)
+        # GitLab returns raw bytes; decode as utf-8 with replacement so binary
+        # content (unlikely under docs/ but possible) still produces a string
+        # the pipeline can chunk.
+        return response.content.decode("utf-8", errors="replace")
+
+    def _last_commit_time(self, project_id: int, path: str, ref: str) -> datetime | None:
+        """Best-effort per-file last-modified timestamp.
+
+        Uses the /commits endpoint filtered by path. Falls back to None if the
+        repo/path is missing. The pipeline treats None as "unknown".
+        """
+        encoded_path = quote(path, safe="")
+        endpoint = (
+            f"/projects/{project_id}/repository/commits"
+            f"?path={encoded_path}&ref_name={quote(ref, safe='')}&per_page=1"
+        )
+        try:
+            response = self._client.get(endpoint)
+            if response.status_code != 200:
+                return None
+            commits = response.json() or []
+            if not commits:
+                return None
+            return _parse_gitlab_datetime(commits[0].get("committed_date"))
+        except httpx.HTTPError as e:
+            log.debug("gitlab_last_commit_failed", path=path, error=str(e)[:200])
+            return None
+
+    def _paginate(self, path: str, *, limit: int) -> list[dict[str, Any]]:
+        """Follow rel=next pagination links until exhausted or ``limit`` hit."""
+        results: list[dict[str, Any]] = []
+        current = path
+        while current and len(results) < limit:
+            response = self._client.get(current)
+            _raise_for_status(response, current)
+            batch = response.json()
+            if not isinstance(batch, list):
+                raise GitLabAPIError(f"Expected list from {current}, got {type(batch).__name__}")
+            results.extend(batch)
+            current = _next_page_url(response)
+        return results[:limit]
+
+
+# ---------- module-level helpers ----------
+
+
+def _is_knowledge_path(path: str) -> bool:
+    lowered = path.lower()
+    if lowered in KNOWLEDGE_ROOT_FILES:
+        return True
+    if any(lowered.startswith(prefix) for prefix in KNOWLEDGE_ROOT_DIRS):
+        return any(lowered.endswith(ext) for ext in KNOWLEDGE_EXTENSIONS)
+    return False
+
+
+def _extension_of(path: str) -> str:
+    idx = path.rfind(".")
+    return path[idx:].lower() if idx >= 0 else ""
+
+
+def _extract_title(path: str, content: str) -> str:
+    """Pull an H1 from markdown, otherwise humanize the filename."""
+    if path.lower().endswith((".md", ".markdown")):
+        for line in content.split("\n")[:10]:
             stripped = line.strip()
             if stripped.startswith("# "):
                 return stripped[2:].strip()
-    return path.stem.replace("-", " ").replace("_", " ").title()
+    name = path.rsplit("/", 1)[-1]
+    if "." in name:
+        name = name.rsplit(".", 1)[0]
+    return name.replace("-", " ").replace("_", " ").title()
+
+
+def _parse_source_path(source_path: str) -> tuple[str, str, str]:
+    """Undo the ``{project_path}@{ref}:{inner_path}`` encoding from list_documents."""
+    if "@" not in source_path or ":" not in source_path:
+        raise GitLabAPIError(f"Malformed gitlab source_path: {source_path}")
+    project_path, rest = source_path.split("@", 1)
+    ref, inner_path = rest.split(":", 1)
+    return project_path, ref, inner_path
+
+
+def _parse_gitlab_datetime(value: Any) -> datetime | None:
+    if not value or not isinstance(value, str):
+        return None
+    # GitLab timestamps look like "2024-05-12T10:34:56.000Z".
+    normalized = value.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _raise_for_status(response: httpx.Response, context: str) -> None:
+    if response.status_code // 100 == 2:
+        return
+    body_snippet = response.text[:200] if response.text else ""
+    raise GitLabAPIError(
+        f"GitLab API {response.status_code} on {context}: {body_snippet}"
+    )
+
+
+def _next_page_url(response: httpx.Response) -> str | None:
+    """Parse a GitLab ``Link`` header for the rel=next URL.
+
+    GitLab emits absolute URLs (e.g.
+    ``https://gitlab.example/api/v4/projects?page=2``). We just return them
+    as-is: httpx.Client accepts absolute URLs in ``client.get()`` even when a
+    ``base_url`` is configured, so the caller doesn't need to reconstruct
+    relative paths.
+    """
+    link = response.headers.get("link") or response.headers.get("Link")
+    if not link:
+        return None
+    for part in link.split(","):
+        segments = [s.strip() for s in part.split(";")]
+        if len(segments) < 2:
+            continue
+        url_segment = segments[0]
+        rel_segments = [s for s in segments[1:] if s.startswith("rel=")]
+        if not rel_segments:
+            continue
+        rel_value = rel_segments[0].split("=", 1)[1].strip().strip('"')
+        if rel_value != "next":
+            continue
+        if url_segment.startswith("<") and url_segment.endswith(">"):
+            url_segment = url_segment[1:-1]
+        return url_segment
+    return None
 
 
 ConnectorRegistry.register("gitlab", GitLabConnector)

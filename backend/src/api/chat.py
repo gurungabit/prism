@@ -6,7 +6,7 @@ from collections import defaultdict
 from typing import AsyncGenerator
 
 from src.config import settings
-from src.ollama_client import get_ollama_client
+from src.llm_client import get_llm_client
 from src.observability.logging import get_logger
 from src.retrieval.hybrid_search import HybridSearchEngine
 
@@ -78,10 +78,10 @@ Be concise and direct."""
     Answer the question based on the retrieved documents. Cite sources using [Source N] notation."""
 
     try:
-        client = get_ollama_client()
+        client = get_llm_client()
         collected = ""
 
-        stream = await client.chat(
+        stream = await client.chat.completions.create(
             model=settings.model_synthesis,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -91,7 +91,11 @@ Be concise and direct."""
         )
 
         async for chunk in stream:
-            token = chunk["message"]["content"]
+            if not chunk.choices:
+                continue
+            token = chunk.choices[0].delta.content or ""
+            if not token:
+                continue
             collected += token
             yield {"event": "token", "data": json.dumps({"content": token})}
 

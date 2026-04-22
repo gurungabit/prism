@@ -37,9 +37,9 @@ graph TB
 
     subgraph SHARED["Shared Resources"]
         OS[(OpenSearch)]
-        N4J[(Neo4j)]
+        N4J[(Knowledge Store · PostgreSQL)]
         RRK["Cross-encoder<br/>Reranker"]
-        LLM["Ollama<br/>Qwen 2.5 7B"]
+        LLM["LLM Proxy<br/>OpenAI-compatible"]
     end
 
     R --> RT --> D --> RE --> C --> CI --> S
@@ -87,12 +87,15 @@ Purpose:
 
 Key behaviors:
 - reranks routing-relevant chunks
-- queries Neo4j for teams, service ownership, and conflicts
+- queries the declared catalog (`TeamRepository`, `ServiceRepository`) for
+  teams and their owned services
 - uses the LLM to score candidate teams and explain the recommendation
 
 Notes:
 - the UI presents router services as **Services In Scope**
-- ownership conflicts are preserved and surfaced instead of silently resolved
+- under the declared ownership model every service has exactly one team, so
+  there is no ownership-conflict surface to preserve (see plan open
+  question 4)
 
 ### Dependencies
 
@@ -102,7 +105,7 @@ Purpose:
 Key behaviors:
 - prefers router-identified services in scope
 - falls back to chunk service hints only when routing did not identify services
-- traverses Neo4j dependencies and classifies edges
+- traverses the dependency graph (recursive CTE in PostgreSQL) and classifies edges
 
 Output semantics:
 - `blocking`: relationships that are likely to stop or gate the work
@@ -178,7 +181,7 @@ classDiagram
         +AgentResult coverage_report
         +AgentResult citation_result
         +list stale_sources
-        +list conflicts
+        +list conflicts  "always empty under declared model; retained for back-compat"
         +int retrieval_rounds
         +list agent_trace
         +dict final_report

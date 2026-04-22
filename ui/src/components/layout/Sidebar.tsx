@@ -7,6 +7,7 @@ import {
   FlaskConical,
   MessageCircle,
   History,
+  Network,
   PanelLeftClose,
   PanelLeft,
   Triangle,
@@ -14,6 +15,7 @@ import {
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
+  { to: "/organization", label: "Organization", icon: Network },
   { to: "/analyze", label: "Analyze", icon: FlaskConical },
   { to: "/search", label: "Search", icon: Search },
   { to: "/chat", label: "Chat", icon: MessageCircle },
@@ -35,15 +37,35 @@ export function Sidebar() {
         ${collapsed ? "w-[52px]" : "w-52"}
       `}
     >
-      <div className={`flex items-center h-12 ${collapsed ? "justify-center px-2" : "px-4"}`}>
-        <div className="flex items-center gap-2">
+      <div
+        className={`
+          flex items-center h-12
+          ${collapsed ? "flex-col-reverse h-auto gap-1 py-2 px-1.5" : "justify-between px-4"}
+        `}
+      >
+        <Link
+          to="/"
+          aria-label="PRISM home"
+          className="flex items-center gap-2 rounded-md -mx-1 px-1 py-1 transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-700/30"
+        >
           <Triangle className="w-4 h-4 text-[var(--color-accent)] dark:text-[var(--color-accent-dark)] flex-shrink-0" />
           {!collapsed && (
             <span className="text-[13px] font-bold tracking-tight text-zinc-900 dark:text-zinc-100">
               PRISM
             </span>
           )}
-        </div>
+        </Link>
+        <button
+          onClick={() => setCollapsed(!collapsed)}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          className="flex items-center justify-center rounded-lg p-1.5 text-zinc-300 dark:text-zinc-600 hover:text-zinc-500 dark:hover:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-700/30 transition-colors duration-150"
+        >
+          {collapsed ? (
+            <PanelLeft className="w-3.5 h-3.5" />
+          ) : (
+            <PanelLeftClose className="w-3.5 h-3.5" />
+          )}
+        </button>
       </div>
 
       <nav className="flex-1 py-2 space-y-0.5 overflow-y-auto" role="navigation">
@@ -78,19 +100,6 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="border-t border-zinc-100 dark:border-zinc-700/40 p-1.5">
-        <button
-          onClick={() => setCollapsed(!collapsed)}
-          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          className="flex items-center justify-center w-full rounded-lg py-1.5 text-zinc-300 dark:text-zinc-600 hover:text-zinc-500 dark:hover:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-700/30 transition-colors duration-150"
-        >
-          {collapsed ? (
-            <PanelLeft className="w-3.5 h-3.5" />
-          ) : (
-            <PanelLeftClose className="w-3.5 h-3.5" />
-          )}
-        </button>
-      </div>
     </aside>
   );
 }

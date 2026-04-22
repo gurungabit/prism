@@ -1,4 +1,20 @@
+"""Hybrid (BM25 + vector) retrieval with declared-scope filtering.
+
+Retrieval accepts an optional ``scope_filter`` that maps directly to the plan:
+
+    WHERE org_id = Z
+      AND (team_id    IS NULL OR team_id    = X)
+      AND (service_id IS NULL OR service_id = Y)
+
+i.e. org-scoped chunks always match; team / service-scoped chunks match only
+when in scope. The filter is pushed down into OpenSearch as ``should`` /
+``must_not`` clauses so it happens at retrieval time, not after scoring.
+"""
+
 from __future__ import annotations
+
+from typing import Any, Iterable
+from uuid import UUID
 
 from opensearchpy import OpenSearch
 
@@ -23,6 +39,8 @@ class HybridSearchEngine:
         top_k: int | None = None,
         filters: dict | None = None,
         expand: bool = True,
+        *,
+        scope_filter: dict | None = None,
     ) -> list[Chunk]:
         top_k = top_k or settings.retrieval_top_k
 
@@ -31,14 +49,20 @@ class HybridSearchEngine:
         else:
             queries = [requirement]
 
+        # Merge the caller's ``filters`` with the declared-scope filter. The
+        # scope filter lives on its own because it's the one that uses
+        # bool/should semantics (nullability matters); ``filters`` stays as
+        # plain term/terms clauses.
+        merged_filters = dict(filters or {})
+
         all_results: list[list[Chunk]] = []
 
         for q in queries:
-            bm25_results = self._bm25_search(q, top_k, filters)
+            bm25_results = self._bm25_search(q, top_k, merged_filters, scope_filter)
             all_results.append(bm25_results)
 
         query_embedding = embed_query(requirement)
-        vector_results = self._vector_search(query_embedding, top_k, filters)
+        vector_results = self._vector_search(query_embedding, top_k, merged_filters, scope_filter)
         all_results.append(vector_results)
 
         merged = self._rrf_merge(all_results, k=60)
@@ -53,14 +77,18 @@ class HybridSearchEngine:
             merged=len(merged),
             deduped=len(deduped),
             returned=len(result),
+            scoped=bool(scope_filter),
         )
         return result
+
+    # ----- per-query runners -----
 
     def _bm25_search(
         self,
         query_text: str,
         top_k: int,
         filters: dict | None = None,
+        scope_filter: dict | None = None,
     ) -> list[Chunk]:
         body: dict = {
             "size": top_k,
@@ -71,8 +99,8 @@ class HybridSearchEngine:
             },
         }
 
-        if filters:
-            filter_clauses = self._build_filters(filters)
+        filter_clauses = self._combine_filters(filters, scope_filter)
+        if filter_clauses:
             body["query"]["bool"]["filter"] = filter_clauses
 
         try:
@@ -87,6 +115,7 @@ class HybridSearchEngine:
         query_vector: list[float],
         top_k: int,
         filters: dict | None = None,
+        scope_filter: dict | None = None,
         min_score: float = 0.6,
     ) -> list[Chunk]:
         body: dict = {
@@ -101,20 +130,18 @@ class HybridSearchEngine:
             },
         }
 
-        if filters:
+        filter_clauses = self._combine_filters(filters, scope_filter)
+        if filter_clauses:
             body["query"] = {
                 "bool": {
                     "must": [body["query"]],
-                    "filter": self._build_filters(filters),
+                    "filter": filter_clauses,
                 }
             }
 
         try:
             response = self.client.search(index=self.index_name, body=body)
             chunks = self._parse_hits(response)
-            # Filter low-similarity kNN results.
-            # With cosinesimil/nmslib: score = 1/(2 - cos_sim).
-            # Threshold 0.6 ≈ cosine similarity > 0.33.
             if min_score:
                 before = len(chunks)
                 chunks = [c for c in chunks if c.score >= min_score]
@@ -180,35 +207,39 @@ class HybridSearchEngine:
 
         return result
 
+    # ----- filter composition -----
+
+    def _combine_filters(
+        self,
+        filters: dict | None,
+        scope_filter: dict | None,
+    ) -> list[dict]:
+        clauses = self._build_filters(filters) if filters else []
+        if scope_filter:
+            scope_clauses = _build_scope_clauses(scope_filter)
+            clauses.extend(scope_clauses)
+        return clauses
+
     def _build_filters(self, filters: dict) -> list[dict]:
         clauses = []
-        if "source_platform" in filters:
-            clause = self._build_filter_clause("source_platform", filters["source_platform"])
-            if clause:
-                clauses.append(clause)
-        if "doc_type" in filters:
-            clause = self._build_filter_clause("doc_type", filters["doc_type"])
-            if clause:
-                clauses.append(clause)
-        if "team_hint" in filters:
-            clause = self._build_filter_clause("team_hint", filters["team_hint"])
-            if clause:
-                clauses.append(clause)
-        if "service_hint" in filters:
-            clause = self._build_filter_clause("service_hint", filters["service_hint"])
-            if clause:
-                clauses.append(clause)
+        for field in ("source_platform", "doc_type", "team_hint", "service_hint", "org_id", "team_id", "service_id"):
+            if field in filters:
+                clause = self._build_filter_clause(field, filters[field])
+                if clause:
+                    clauses.append(clause)
         return clauses
 
     @staticmethod
-    def _build_filter_clause(field: str, value: str | list[str] | tuple[str, ...] | set[str] | None) -> dict | None:
+    def _build_filter_clause(field: str, value: Any) -> dict | None:
         if value is None:
             return None
         if isinstance(value, (list, tuple, set)):
-            values = [item for item in value if item]
+            values = [str(item) for item in value if item not in (None, "")]
             if not values:
                 return None
             return {"terms": {field: values}}
+        if isinstance(value, UUID):
+            return {"term": {field: str(value)}}
         if value == "":
             return None
         return {"term": {field: value}}
@@ -226,6 +257,9 @@ class HybridSearchEngine:
                     section_heading=source.get("section_heading", ""),
                     team_hint=source.get("team_hint", ""),
                     service_hint=source.get("service_hint", ""),
+                    org_id=source.get("org_id"),
+                    team_id=source.get("team_id"),
+                    service_id=source.get("service_id"),
                     doc_type=source.get("doc_type", "unknown"),
                     last_modified=source.get("last_modified"),
                     author=source.get("author", ""),
@@ -245,3 +279,61 @@ class HybridSearchEngine:
                 log.warning("parse_hit_failed", hit_id=hit.get("_id"), error=str(e))
                 continue
         return chunks
+
+
+def _build_scope_clauses(scope_filter: dict) -> list[dict]:
+    """Turn ``{org_id, team_ids, service_ids}`` into OpenSearch bool clauses.
+
+    The model:
+    - ``org_id`` is a hard filter: only chunks from that org ever match.
+    - ``team_ids`` and ``service_ids`` use the *nullable OR equal* pattern:
+      a chunk matches if its team/service is NULL **or** in the allow-list.
+      ``NULL`` means the chunk is org-scoped (or team-scoped, respectively),
+      so it's in scope by inheritance.
+    """
+    clauses: list[dict] = []
+
+    org_id = scope_filter.get("org_id")
+    if org_id:
+        clauses.append({"term": {"org_id": str(org_id)}})
+
+    team_ids = _collect_ids(scope_filter.get("team_ids"))
+    if team_ids:
+        # match team_id IS NULL OR team_id IN (team_ids)
+        clauses.append(
+            {
+                "bool": {
+                    "should": [
+                        {"bool": {"must_not": {"exists": {"field": "team_id"}}}},
+                        {"terms": {"team_id": team_ids}},
+                    ],
+                    "minimum_should_match": 1,
+                }
+            }
+        )
+
+    service_ids = _collect_ids(scope_filter.get("service_ids"))
+    if service_ids:
+        clauses.append(
+            {
+                "bool": {
+                    "should": [
+                        {"bool": {"must_not": {"exists": {"field": "service_id"}}}},
+                        {"terms": {"service_id": service_ids}},
+                    ],
+                    "minimum_should_match": 1,
+                }
+            }
+        )
+
+    return clauses
+
+
+def _collect_ids(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (str, UUID)):
+        return [str(value)]
+    if isinstance(value, Iterable):
+        return [str(v) for v in value if v not in (None, "")]
+    return [str(value)]

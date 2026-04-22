@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 import uuid
+from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -13,22 +13,19 @@ from sse_starlette.sse import EventSourceResponse
 from src.agents.orchestrator import run_analysis
 from src.api.chat import _conversations, chat_stream
 from src.api.streaming import create_step_callback, event_store, stream_events
+from src.catalog import ServiceRepository, TeamRepository
 from src.config import settings
 from src.ingestion.analysis_store import AnalysisRepository
 from src.ingestion.indexer import get_opensearch_client
-from src.ingestion.graph_builder import KnowledgeGraphBuilder
-from src.ingestion.pipeline import IngestionPipeline
-from src.ingestion.registry import DocumentRegistry
 from src.models.report import AnalysisInput
 from src.observability.logging import get_logger
-from src.retrieval.graph_search import (
-    get_all_conflicts,
+from src.retrieval.hybrid_search import HybridSearchEngine
+from src.retrieval.knowledge_queries import (
     get_all_teams,
     get_service_dependencies,
     get_service_ownership,
     get_team_profile,
 )
-from src.retrieval.hybrid_search import HybridSearchEngine
 
 log = get_logger("routes")
 
@@ -64,6 +61,9 @@ class SearchRequest(BaseModel):
     top_k: int | None = None
     page: int = 1
     page_size: int = 40
+    # Declared-scope filter, pushed into OpenSearch. Keys match
+    # ``HybridSearchEngine.scope_filter``: org_id, team_ids[], service_ids[].
+    scope: dict | None = None
 
 
 class FeedbackRequest(BaseModel):
@@ -178,7 +178,6 @@ async def stream_analysis(analysis_id: str, request: Request):
 
 @router.get("/analyze/{analysis_id}/report")
 async def get_report(analysis_id: str):
-    # Check in-memory first (active analyses)
     analysis = _analyses.get(analysis_id)
     if analysis:
         if analysis["status"] == "running":
@@ -190,7 +189,6 @@ async def get_report(analysis_id: str):
             raise HTTPException(status_code=500, detail=analysis.get("error", "Analysis failed"))
         return analysis["report"]
 
-    # Fallback to database (survives restarts)
     try:
         repo = await AnalysisRepository.create()
         row = await repo.get(analysis_id)
@@ -240,37 +238,6 @@ async def submit_feedback(analysis_id: str, feedback: FeedbackRequest):
     return {"status": "received", "message": "Feedback recorded for future improvement"}
 
 
-@router.post("/ingest")
-async def trigger_ingest(background_tasks: BackgroundTasks, force: bool = False):
-    background_tasks.add_task(_run_ingest, None, force)
-    return {"status": "started", "message": "Incremental ingestion started"}
-
-
-@router.post("/ingest/{platform}")
-async def trigger_platform_ingest(platform: str, background_tasks: BackgroundTasks, force: bool = False):
-    background_tasks.add_task(_run_ingest, platform, force)
-    return {"status": "started", "platform": platform}
-
-
-@router.post("/ingest/full")
-async def trigger_full_ingest(background_tasks: BackgroundTasks):
-    background_tasks.add_task(_run_ingest, None, True)
-    return {"status": "started", "message": "Full re-index started"}
-
-
-async def _run_ingest(platform: str | None, force: bool) -> None:
-    try:
-        pipeline = await IngestionPipeline.create()
-        if platform:
-            stats = await pipeline.ingest_platform(platform, force=force)
-        else:
-            stats = await pipeline.ingest_all(force=force)
-        log.info("ingest_complete", stats=stats)
-        await pipeline.close()
-    except Exception as e:
-        log.error("ingest_failed", error=str(e))
-
-
 @router.post("/search")
 async def search_documents(request: SearchRequest):
     page = max(request.page, 1)
@@ -284,6 +251,7 @@ async def search_documents(request: SearchRequest):
         top_k=fetch_limit,
         filters=request.filters if request.filters else None,
         expand=False,
+        scope_filter=request.scope,
     )
 
     total = len(chunks) if len(chunks) < fetch_limit else None
@@ -314,6 +282,9 @@ async def search_documents(request: SearchRequest):
                 "document_title": c.metadata.document_title,
                 "doc_type": c.metadata.doc_type,
                 "platform": c.metadata.source_platform,
+                "org_id": str(c.metadata.org_id) if c.metadata.org_id else None,
+                "team_id": str(c.metadata.team_id) if c.metadata.team_id else None,
+                "service_id": str(c.metadata.service_id) if c.metadata.service_id else None,
             }
             for c in page_chunks
         ],
@@ -324,85 +295,59 @@ async def search_documents(request: SearchRequest):
     }
 
 
+# ---------- graph endpoints (now catalog-backed) ----------
+
+
 @router.get("/graph/teams")
 async def list_teams():
-    graph = await KnowledgeGraphBuilder.create()
-    teams = await get_all_teams(graph)
-    await graph.close()
+    team_repo = await TeamRepository.create()
+    service_repo = await ServiceRepository.create()
+    try:
+        teams = await get_all_teams(team_repo, service_repo)
+    finally:
+        await service_repo.close()
+        await team_repo.close()
     return {"teams": teams}
 
 
 @router.get("/graph/teams/{team_name}")
 async def get_team(team_name: str):
-    graph = await KnowledgeGraphBuilder.create()
-    profile = await get_team_profile(graph, team_name)
-    await graph.close()
+    team_repo = await TeamRepository.create()
+    service_repo = await ServiceRepository.create()
+    try:
+        profile = await get_team_profile(team_repo, service_repo, team_name)
+    finally:
+        await service_repo.close()
+        await team_repo.close()
     return profile
 
 
 @router.get("/graph/services/{service_name}")
 async def get_service(service_name: str):
-    graph = await KnowledgeGraphBuilder.create()
-    owners = await get_service_ownership(graph, service_name)
-    deps = await get_service_dependencies(graph, service_name)
-    await graph.close()
+    team_repo = await TeamRepository.create()
+    service_repo = await ServiceRepository.create()
+    try:
+        owners = await get_service_ownership(team_repo, service_repo, service_name)
+        deps = await get_service_dependencies(service_repo, service_name)
+    finally:
+        await service_repo.close()
+        await team_repo.close()
     return {"service": service_name, "owners": owners, "dependencies": deps}
 
 
 @router.get("/graph/dependencies/{service_name}")
 async def get_dependencies(service_name: str, depth: int = Query(default=2, ge=1, le=5)):
-    graph = await KnowledgeGraphBuilder.create()
-    deps = await get_service_dependencies(graph, service_name, depth)
-    await graph.close()
+    service_repo = await ServiceRepository.create()
+    try:
+        deps = await get_service_dependencies(service_repo, service_name, depth)
+    finally:
+        await service_repo.close()
     return {"service": service_name, "depth": depth, "dependencies": deps}
 
 
-@router.get("/graph/conflicts")
-async def list_conflicts():
-    graph = await KnowledgeGraphBuilder.create()
-    conflicts = await get_all_conflicts(graph)
-    await graph.close()
-    return {"conflicts": conflicts}
-
-
-@router.get("/sources")
-async def list_sources():
-    registry = await DocumentRegistry.create()
-    all_docs = await registry.get_all()
-    await registry.close()
-
-    # Group by platform
-    platforms: dict[str, dict] = {}
-    for doc in all_docs:
-        platform = doc["source_platform"]
-        if platform not in platforms:
-            platforms[platform] = {
-                "platform": platform,
-                "document_count": 0,
-                "last_ingested": None,
-                "documents": [],
-            }
-        platforms[platform]["document_count"] += 1
-        ingested = doc.get("last_ingested_at")
-        ingested_str = None
-        if ingested:
-            ingested_str = ingested.isoformat() if hasattr(ingested, "isoformat") else str(ingested)
-            if platforms[platform]["last_ingested"] is None or ingested_str > platforms[platform]["last_ingested"]:
-                platforms[platform]["last_ingested"] = ingested_str
-        platforms[platform]["documents"].append(
-            {
-                "document_id": doc["document_id"],
-                "source_path": doc["source_path"],
-                "chunk_count": doc.get("chunk_count", 0),
-                "status": doc.get("status", "unknown"),
-                "last_ingested_at": ingested_str,
-            }
-        )
-
-    return {
-        "sources": list(platforms.values()),
-        "total": len(all_docs),
-    }
+# ``/api/graph/conflicts`` is removed in Phase 1 (plan open question 4). The
+# declared catalog can't produce ownership conflicts at the data layer, so
+# the endpoint was returning misleading data. The UI widget is also removed.
 
 
 @router.delete("/history/{analysis_id}")
@@ -497,7 +442,6 @@ async def get_chat_source_preview(
         )
         hits = response.get("hits", {}).get("hits", [])
 
-        # If the first chunk has empty content, try fetching any chunk with content
         if hits and not hits[0].get("_source", {}).get("content", "").strip():
             body_with_content = {
                 "size": 1,

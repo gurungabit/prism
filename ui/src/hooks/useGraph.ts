@@ -5,7 +5,6 @@ import {
   getTeamProfile,
   getService,
   getDependencies,
-  getConflicts,
 } from "../lib/api";
 
 export function useHealth() {
@@ -53,11 +52,4 @@ export function useDependencies(serviceName: string | null, depth = 2) {
   });
 }
 
-export function useConflicts() {
-  return useQuery({
-    queryKey: ["conflicts"],
-    queryFn: getConflicts,
-    staleTime: 60_000,
-    retry: false,
-  });
-}
+// Conflict surface removed in Phase 1 (plan open question 4).

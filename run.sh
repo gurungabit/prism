@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$ROOT_DIR/backend"
 FRONTEND_DIR="$ROOT_DIR/ui"
-DATA_DIR="$ROOT_DIR/data/sources"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -75,34 +74,22 @@ step "Installing frontend dependencies"
 (cd "$FRONTEND_DIR" && bun install --silent)
 ok "Frontend packages installed"
 
-step "Starting infrastructure (OpenSearch, Neo4j, PostgreSQL, Redis)"
-docker compose -f "$ROOT_DIR/docker-compose.yml" up -d opensearch neo4j postgres redis 2>&1 | grep -v "^$"
+step "Starting infrastructure (OpenSearch, PostgreSQL, Redis)"
+docker compose -f "$ROOT_DIR/docker-compose.yml" up -d opensearch postgres redis 2>&1 | grep -v "^$"
 
 step "Waiting for services to be healthy"
 wait_for_http localhost 9200 "OpenSearch"
 wait_for_tcp  localhost 5432 "PostgreSQL" 20
 wait_for_tcp  localhost 6379 "Redis" 10
-wait_for_http localhost 7474 "Neo4j" 30
 
 step "Setting up OpenSearch index + search pipeline"
 (cd "$BACKEND_DIR" && uv run python "$ROOT_DIR/scripts/setup_opensearch.py")
 ok "OpenSearch configured"
 
-step "Setting up Neo4j schema"
-(cd "$BACKEND_DIR" && uv run python "$ROOT_DIR/scripts/setup_neo4j.py")
-ok "Neo4j configured"
-
-if [ -z "$(ls -A "$DATA_DIR/gitlab" 2>/dev/null)" ]; then
-    step "Generating seed data (first run)"
-    (cd "$BACKEND_DIR" && uv run python "$ROOT_DIR/scripts/seed_data.py" "$DATA_DIR")
-    ok "186 documents generated across 4 platforms"
-else
-    ok "Seed data already exists — skipping generation"
-fi
-
-step "Ingesting documents into OpenSearch + Neo4j"
-(cd "$BACKEND_DIR" && uv run python "$ROOT_DIR/scripts/ingest.py" --data-dir "$ROOT_DIR/data")
-ok "Ingestion complete"
+# Note: no seed-data generation or automatic ingestion.
+# Declarative ownership (see plan.md) means the user tells PRISM about their
+# org/teams/services/sources via the setup wizard, and ingestion runs per
+# declared source. See /setup on first boot.
 
 set +e
 trap cleanup INT TERM
@@ -130,8 +117,8 @@ echo -e "  UI:         ${CYAN}http://localhost:5173${NC}"
 echo -e "  API:        ${CYAN}http://localhost:8000${NC}"
 echo -e "  API docs:   ${CYAN}http://localhost:8000/docs${NC}"
 echo -e "  OpenSearch: ${CYAN}http://localhost:9200${NC}"
-echo -e "  Neo4j:      ${CYAN}http://localhost:7474${NC}"
 echo ""
+echo -e "  First run? Head to ${CYAN}http://localhost:5173/setup${NC} to declare your org."
 echo -e "  Press ${YELLOW}Ctrl+C${NC} to stop everything"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 

@@ -6,7 +6,7 @@ from collections import OrderedDict
 from pydantic import BaseModel
 
 from src.config import settings
-from src.ollama_client import get_ollama_client
+from src.llm_client import get_llm_client
 from src.observability.logging import get_logger
 
 log = get_logger("query_expansion")
@@ -35,17 +35,24 @@ async def expand_queries(requirement: str) -> list[str]:
         return list(cached)
 
     try:
-        client = get_ollama_client()
-        response = await client.chat(
-            model=settings.model_bulk,
-            messages=[
-                {"role": "system", "content": EXPANSION_SYSTEM_PROMPT},
-                {"role": "user", "content": f"Generate 5 search query variants for this requirement:\n\n{requirement}"},
-            ],
-            format=ExpandedQueries.model_json_schema(),
+        schema_hint = json.dumps(ExpandedQueries.model_json_schema(), separators=(",", ":"))
+        structured_system = (
+            f"{EXPANSION_SYSTEM_PROMPT}\n\n"
+            f"Respond with a single JSON object matching this schema:\n{schema_hint}\n"
+            "Return ONLY the JSON object — no prose, no code fences."
         )
 
-        content = response["message"]["content"]
+        client = get_llm_client()
+        response = await client.chat.completions.create(
+            model=settings.model_bulk,
+            messages=[
+                {"role": "system", "content": structured_system},
+                {"role": "user", "content": f"Generate 5 search query variants for this requirement:\n\n{requirement}"},
+            ],
+            response_format={"type": "json_object"},
+        )
+
+        content = response.choices[0].message.content or ""
         parsed = json.loads(content)
         result = ExpandedQueries.model_validate(parsed)
         _remember_queries(requirement, result.variants)

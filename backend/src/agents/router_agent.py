@@ -9,11 +9,11 @@ from src.agents.result import AgentResult
 from src.agents.schemas import RouterOutput
 from src.agents.state_codec import normalize_chunks
 from src.agents.step_callbacks import get_step_callback
+from src.catalog import ServiceRepository, TeamRepository
 from src.config import settings
-from src.ingestion.graph_builder import KnowledgeGraphBuilder
 from src.models.chunk import Chunk
 from src.observability.logging import get_logger
-from src.retrieval.graph_search import get_all_conflicts, get_all_teams
+from src.retrieval.knowledge_queries import get_all_teams
 from src.retrieval.reranker import rerank_for_agent
 
 log = get_logger("router_agent")
@@ -33,23 +33,28 @@ async def router_agent(state: dict[str, Any]) -> dict[str, Any]:
     ranked_chunks = rerank_for_agent(chunks, requirement, "router")
 
     try:
-        graph = await KnowledgeGraphBuilder.create()
+        # Catalog-backed team list. Under the declared model ownership is a
+        # direct lookup (no inference, no conflict surface -- see plan open
+        # question 4), so we pass an empty ``conflicts`` to keep the prompt
+        # contract stable without misleading the router.
+        team_repo = await TeamRepository.create()
+        service_repo = await ServiceRepository.create()
 
         if on_step:
             await on_step(
                 {
                     "agent": "route",
                     "action": "querying_graph",
-                    "detail": "Querying knowledge graph for teams and services...",
+                    "detail": "Querying declared catalog for teams and services...",
                 }
             )
 
-        teams = await get_all_teams(graph)
-        conflicts = await get_all_conflicts(graph)
+        teams = await get_all_teams(team_repo, service_repo)
+        conflicts: list[dict] = []
 
         chunks_text = _format_chunks(ranked_chunks)
         graph_data = json.dumps(teams, indent=2, default=str)
-        conflicts_text = json.dumps(conflicts, indent=2, default=str) if conflicts else "None detected"
+        conflicts_text = "None detected"
 
         prompt = build_router_prompt(requirement, chunks_text, graph_data, conflicts_text)
 
@@ -68,7 +73,8 @@ async def router_agent(state: dict[str, Any]) -> dict[str, Any]:
             on_step=on_step,
         )
 
-        await graph.close()
+        await team_repo.close()
+        await service_repo.close()
 
         if on_step:
             try:
@@ -101,18 +107,11 @@ async def router_agent(state: dict[str, Any]) -> dict[str, Any]:
             confidence=routing.primary_team.confidence,
         )
 
-        conflict_data = []
-        for conflict in conflicts:
-            conflict_data.append(
-                {
-                    "service": conflict.get("service", ""),
-                    "owners": conflict.get("owners", []),
-                }
-            )
-
         return {
             "team_routing": AgentResult(status="success", data=routing.model_dump()),
-            "conflicts": conflict_data,
+            # Conflicts retained in the state shape to avoid churning every
+            # downstream consumer, but always empty under the declared model.
+            "conflicts": [],
         }
 
     except Exception as e:

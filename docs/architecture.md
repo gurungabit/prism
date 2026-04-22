@@ -7,6 +7,10 @@ PRISM has two primary product paths:
 - **Analysis** for long-running, multi-agent requirement briefs
 - **Search and chat** for direct retrieval over the same knowledge base
 
+Both run on top of the **declared catalog** (organizations → teams → services)
+and the **declared sources** attached to those entities. Ingested documents
+carry a scope pointer `(org_id, team_id, service_id)` directly — no inference.
+
 ```mermaid
 graph TB
     subgraph CLIENT["Client Surfaces"]
@@ -14,12 +18,14 @@ graph TB
         ANALYZE["Analyze"]
         SEARCH["Search"]
         CHAT["Chat"]
-        SOURCES["Sources"]
+        SETUP["Setup wizard"]
+        SOURCES["Sources + detail"]
         HISTORY["History"]
     end
 
     subgraph API_LAYER["Application Layer"]
         API["FastAPI API<br/>Port 8000"]
+        CATAPI["Catalog Routes<br/>/api/orgs · /api/teams · /api/services · /api/sources"]
         STREAM["SSE Streaming<br/>Analysis + chat"]
     end
 
@@ -35,14 +41,14 @@ graph TB
     end
 
     subgraph RETRIEVAL["Retrieval + Intelligence"]
-        HS["Hybrid Search<br/>BM25 + vector"]
+        HS["Hybrid Search<br/>BM25 + vector + scope filter"]
         RRK["Cross-encoder<br/>Reranker"]
-        LLM["Ollama<br/>Qwen 2.5 7B"]
+        LLM["LLM Proxy<br/>OpenAI-compatible"]
     end
 
     subgraph DATA["Data Stores"]
         OS[(OpenSearch)]
-        N4J[(Neo4j)]
+        CAT[(Declared Catalog<br/>orgs · teams · services · sources)]
         PG[(PostgreSQL)]
     end
 
@@ -50,16 +56,18 @@ graph TB
     ANALYZE --> API
     SEARCH --> API
     CHAT --> API
-    SOURCES --> API
+    SETUP --> CATAPI
+    SOURCES --> CATAPI
     HISTORY --> API
     API --> STREAM
+    CATAPI --> CAT
 
     API --> ORC
     ORC --> RET --> RTR --> DEP --> RSK --> COV --> CIT --> SYN
     RET --> HS --> RRK
     HS --> OS
-    RTR --> N4J
-    DEP --> N4J
+    RTR --> CAT
+    DEP --> CAT
     RTR --> LLM
     DEP --> LLM
     RSK --> LLM
@@ -77,12 +85,124 @@ graph TB
     classDef data fill:#4f46e5,color:#fff,stroke:none;
     classDef ai fill:#e11d48,color:#fff,stroke:none;
 
-    class DASH,ANALYZE,SEARCH,CHAT,SOURCES,HISTORY client;
-    class API,STREAM api;
+    class DASH,ANALYZE,SEARCH,CHAT,SETUP,SOURCES,HISTORY client;
+    class API,CATAPI,STREAM api;
     class ORC,RET,RTR,DEP,RSK,COV,CIT,SYN engine;
     class HS,RRK retrieval;
-    class OS,N4J,PG data;
+    class OS,CAT,PG data;
     class LLM ai;
+```
+
+## The Declarative Ownership Model
+
+PRISM replaces regex-inferred ownership with an explicit hierarchy. See
+[plan.md](../plan.md) for the design rationale.
+
+```
+Organization
+ ├── Sources (scope = org)              ← visible to every team in the org
+ └── Teams
+      ├── Sources (scope = team)        ← visible only to this team's analyses
+      └── Services
+           └── Sources (scope = service) ← narrowest; the service's own docs
+```
+
+Every ingested document inherits the `(org_id, team_id, service_id)` triple
+from its source. A chunk's scope is non-negotiable: it is what was declared
+at ingest time, not what the text might have implied.
+
+### Retrieval filter semantics
+
+For an analysis routed to **Team X, Service Y, Org Z**, the filter is:
+
+```sql
+WHERE org_id = Z
+  AND (team_id    IS NULL OR team_id    = X)
+  AND (service_id IS NULL OR service_id = Y)
+```
+
+Org-scoped chunks always match. Team chunks match only when their team is
+in scope. Service chunks match only their own service. The filter pushes
+down to OpenSearch as `bool` clauses — no scoring impact, huge precision
+win.
+
+## Catalog Schema
+
+```mermaid
+erDiagram
+    ORGANIZATIONS ||--o{ TEAMS : has
+    ORGANIZATIONS ||--o{ SOURCES : "scope=org"
+    TEAMS ||--o{ SERVICES : has
+    TEAMS ||--o{ SOURCES : "scope=team"
+    SERVICES ||--o{ SOURCES : "scope=service"
+    SOURCES ||--o{ KG_DOCUMENTS : ingests
+    SOURCES ||--o{ DOCUMENT_REGISTRY : tracks
+    SOURCES ||--|| SOURCE_SECRETS : has
+    SERVICES ||--o{ KG_DEPENDENCIES : from
+    SERVICES ||--o{ KG_DEPENDENCIES : to
+    SERVICES ||--o{ KG_PENDING_DEPENDENCIES : from
+
+    ORGANIZATIONS {
+        uuid id PK
+        text name UK
+    }
+    TEAMS {
+        uuid id PK
+        uuid org_id FK
+        text name
+    }
+    SERVICES {
+        uuid id PK
+        uuid team_id FK
+        text name
+        text repo_url
+    }
+    SOURCES {
+        uuid id PK
+        uuid org_id FK "nullable; exactly-one scope via CHECK"
+        uuid team_id FK "nullable"
+        uuid service_id FK "nullable"
+        text kind
+        text status
+        jsonb config
+    }
+```
+
+Every source row satisfies `(org_id IS NOT NULL) + (team_id IS NOT NULL) +
+(service_id IS NOT NULL) = 1` — enforced with a CHECK constraint in the
+`sources` table.
+
+### Documents and dependencies
+
+- `kg_documents` holds denormalized `(source_id, org_id, team_id, service_id)`
+  plus title/path/platform. Dropping a source cascades these away.
+- `kg_dependencies` is now keyed by service UUIDs (`from_service_id`,
+  `to_service_id`). Edges whose target isn't yet declared are parked in
+  `kg_pending_dependencies` and reconciled when the missing service appears.
+- `document_registry` keeps content-hash idempotency and gains `source_id`.
+
+## Ingestion Flow
+
+```mermaid
+sequenceDiagram
+    participant UI as Setup Wizard / Sources UI
+    participant API as Catalog Routes
+    participant Pipe as IngestionPipeline
+    participant Conn as Connector (e.g. GitLab)
+    participant Store as OpenSearch + Postgres
+    participant Cat as Catalog Repos
+
+    UI->>API: POST /api/sources {scope, scope_id, kind, config, token}
+    API->>Cat: insert sources row + source_secrets
+    UI->>API: POST /api/sources/{id}/ingest
+    API->>Pipe: ingest_source(source_id, force)
+    Pipe->>Cat: load source + resolve scope
+    Pipe->>Conn: list_documents() / fetch_document()
+    Pipe->>Pipe: parse → chunk → tag with scope → embed
+    Pipe->>Store: bulk index chunks (with org_id, team_id, service_id)
+    Pipe->>Cat: write kg_documents + document_registry
+    Pipe->>Cat: extract service deps (service-scoped only)
+    Pipe-->>API: status: ready | error
 ```
 
 ## Product Surfaces
@@ -90,33 +210,39 @@ graph TB
 ```mermaid
 graph LR
     subgraph UI["PRISM UI (Port 5173)"]
-        D["Dashboard<br/>Health · teams · conflicts"]
-        A["Analyze<br/>Structured intake · live run view"]
-        S["Search<br/>Filters · pagination · chunk previews"]
-        C["Chat<br/>Grounded answers · citations"]
-        SO["Sources<br/>Inventory · sync controls"]
-        H["History<br/>Saved analyses"]
+        SETUP["/setup<br/>Create org · teams · services"]
+        D["/<br/>Dashboard"]
+        A["/analyze<br/>Structured intake · live run"]
+        S["/search<br/>Scope-aware search"]
+        C["/chat<br/>Grounded answers"]
+        SO["/sources<br/>Declared sources list"]
+        SDET["/sources/:id<br/>Sync · docs · status"]
+        ORG["/orgs/:id · /teams/:id · /services/:id<br/>Declared entities"]
+        H["/history<br/>Saved analyses"]
     end
 
     subgraph API["Backend Services"]
+        CAT["Catalog APIs"]
         ANALYSIS["Analysis APIs"]
         SEARCHAPI["Search APIs"]
         CHATAPI["Chat APIs"]
-        SOURCEAPI["Sources + history APIs"]
     end
 
-    D --> SOURCEAPI
+    SETUP --> CAT
+    ORG --> CAT
+    SO --> CAT
+    SDET --> CAT
+    D --> CAT
     A --> ANALYSIS
     S --> SEARCHAPI
     C --> CHATAPI
-    SO --> SOURCEAPI
-    H --> SOURCEAPI
+    H --> ANALYSIS
 
     classDef ui fill:#0f766e,color:#fff,stroke:none;
     classDef api fill:#2563eb,color:#fff,stroke:none;
 
-    class D,A,S,C,SO,H ui;
-    class ANALYSIS,SEARCHAPI,CHATAPI,SOURCEAPI api;
+    class SETUP,D,A,S,C,SO,SDET,ORG,H ui;
+    class CAT,ANALYSIS,SEARCHAPI,CHATAPI api;
 ```
 
 ## Runtime Flows
@@ -144,8 +270,8 @@ sequenceDiagram
     API->>PG: create history row
     API->>ORC: run analysis
     ORC->>RET: retrieve relevant chunks
-    ORC->>RTR: choose owner + services in scope
-    ORC->>DEP: map dependency edges
+    ORC->>RTR: pick primary + supporting team(s)
+    ORC->>DEP: map dependency edges from declared graph
     ORC->>RSK: assess risk + effort
     ORC->>COV: check gaps + stale evidence
     ORC->>CIT: verify claims against sources
@@ -154,7 +280,7 @@ sequenceDiagram
     API-->>U: SSE complete event
 ```
 
-### 2. Search Flow
+### 2. Search Flow (scope-aware)
 
 ```mermaid
 sequenceDiagram
@@ -163,154 +289,29 @@ sequenceDiagram
     participant HS as Hybrid Search
     participant OS as OpenSearch
 
-    U->>API: POST /api/search {query, filters, page, page_size}
-    API->>HS: retrieve ranked chunks
-    HS->>OS: BM25 + vector search
+    U->>API: POST /api/search {query, filters, scope:{org_id, team_ids, service_ids}, page}
+    API->>HS: retrieve ranked chunks with scope_filter
+    HS->>OS: BM25 + vector search + scope bool-clauses
     OS-->>HS: ranked chunk hits
     HS-->>API: normalized result list
     API-->>U: paginated search response
-```
-
-### 3. Chat Flow
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant API as FastAPI
-    participant HS as Hybrid Search
-    participant LLM as Ollama
-
-    U->>API: POST /api/chat
-    API->>HS: retrieve top supporting chunks
-    API-->>U: SSE metadata with citations
-    API->>LLM: grounded prompt with retrieved chunks
-    LLM-->>API: streamed answer tokens
-    API-->>U: token events + done
-```
-
-## Layer Breakdown
-
-```mermaid
-graph LR
-    subgraph L0["Layer 0 · Source Systems"]
-        GL["GitLab"]
-        SP["SharePoint"]
-        EX["Excel / CSV"]
-        ON["OneNote"]
-    end
-
-    subgraph L1["Layer 1 · Ingestion"]
-        P["Parser"]
-        CH["Chunker"]
-        DD["Deduplicator"]
-        EM["Embedder"]
-        IX["Indexer"]
-        EE["Entity Extraction"]
-        GB["Graph Builder"]
-    end
-
-    subgraph L2["Layer 2 · Retrieval"]
-        QE["Query Expansion"]
-        BM["BM25 + Vector Search"]
-        RF["RRF Fusion"]
-        RR["Cross-encoder Rerank"]
-    end
-
-    subgraph L3["Layer 3 · Reasoning"]
-        AG["Specialist Agents"]
-    end
-
-    subgraph L4["Layer 4 · Delivery"]
-        FA["FastAPI Routes"]
-        ST["SSE Streaming"]
-    end
-
-    subgraph L5["Layer 5 · Experience"]
-        UI["React UI"]
-    end
-
-    GL --> P
-    SP --> P
-    EX --> P
-    ON --> P
-    P --> CH --> DD --> EM --> IX
-    CH --> EE --> GB
-    QE --> BM --> RF --> RR --> AG
-    AG --> FA --> ST --> UI
-
-    classDef source fill:#64748b,color:#fff,stroke:none;
-    classDef ingest fill:#0f766e,color:#fff,stroke:none;
-    classDef retrieval fill:#7c3aed,color:#fff,stroke:none;
-    classDef reasoning fill:#f59e0b,color:#fff,stroke:none;
-    classDef delivery fill:#2563eb,color:#fff,stroke:none;
-    classDef experience fill:#0891b2,color:#fff,stroke:none;
-
-    class GL,SP,EX,ON source;
-    class P,CH,DD,EM,IX,EE,GB ingest;
-    class QE,BM,RF,RR retrieval;
-    class AG reasoning;
-    class FA,ST delivery;
-    class UI experience;
 ```
 
 ## Data Responsibilities
 
 | Store | Role |
 |---|---|
-| OpenSearch | Chunk storage, embeddings, hybrid retrieval, source preview lookup |
-| Neo4j | Teams, services, ownership, dependency relationships, conflicts |
-| PostgreSQL | Document registry, analysis history, LangGraph checkpoints |
-| Redis | Present in local Docker stack as auxiliary infrastructure, not part of the main request path documented above |
-
-## Knowledge Graph Schema
-
-```mermaid
-graph LR
-    T((Team))
-    S((Service))
-    D((Document))
-    P((Person))
-    TH((Technology))
-
-    T -->|OWNS| S
-    T -->|MAINTAINS| D
-    S -->|DEPENDS_ON| S
-    S -->|USES| TH
-    P -->|BELONGS_TO| T
-    P -->|AUTHORED| D
-    D -->|REFERENCES| S
-
-    classDef team fill:#0f766e,color:#fff,stroke:none;
-    classDef service fill:#2563eb,color:#fff,stroke:none;
-    classDef doc fill:#7c3aed,color:#fff,stroke:none;
-    classDef person fill:#f59e0b,color:#fff,stroke:none;
-    classDef tech fill:#64748b,color:#fff,stroke:none;
-
-    class T team;
-    class S service;
-    class D doc;
-    class P person;
-    class TH tech;
-```
-
-### Core Node Properties
-
-| Node | Typical properties |
-|---|---|
-| Team | `name`, `description`, `contact` |
-| Service | `name`, `team_owner`, `status`, `repo_url` |
-| Document | `id`, `title`, `path`, `platform`, `last_modified` |
-| Person | `name`, `email`, `team` |
-| Technology | `name`, `version` |
-
-### Core Edge Properties
-
-| Edge | Typical properties |
-|---|---|
-| `OWNS` | `confidence`, `source`, `last_updated` |
-| `DEPENDS_ON` | `source`, `confidence`, `reason` |
-| `MAINTAINS` | `source` |
+| **Catalog tables** (`organizations`, `teams`, `services`, `sources`) | The authoritative declared ownership graph. All other writes reference these by UUID FK. |
+| **OpenSearch** | Chunk storage, embeddings, hybrid retrieval, source preview lookup. Chunks carry `source_id`, `org_id`, `team_id`, `service_id` for filter pushdown. |
+| **PostgreSQL / kg_documents** | One row per ingested document with scope pointers + source pointer. |
+| **PostgreSQL / kg_dependencies** | Service-to-service edges by UUID. Unresolved targets sit in `kg_pending_dependencies` until reconciled. |
+| **PostgreSQL / document_registry** | Idempotency (content hash) + which source ingested each doc. |
+| **PostgreSQL / analyses** | Analysis history + LangGraph checkpoints. Unchanged by Phase 1. |
+| **Redis** | Present in local Docker stack as auxiliary infrastructure. |
 
 ## Deployment View
 
-The default local stack uses Docker for infrastructure, `uvicorn` for the API on `:8000`, and Vite for the UI on `:5173`. See [deployment.md](deployment.md) for ports, env vars, and container details.
+The default local stack uses Docker for infrastructure, `uvicorn` for the API
+on `:8000`, and Vite for the UI on `:5173`. First boot drops the user at
+`/setup` because the catalog starts empty. See [deployment.md](deployment.md)
+for ports, env vars, and container details.

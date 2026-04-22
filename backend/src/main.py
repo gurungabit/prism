@@ -5,9 +5,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.agents.orchestrator import shutdown_compiled_app
+from src.api.catalog_routes import router as catalog_router
 from src.api.routes import router
 from src.db import close_postgres_pool
-from src.ingestion.graph_builder import KnowledgeGraphBuilder
 from src.ingestion.indexer import close_opensearch_client
 from src.observability.logging import setup_logging
 
@@ -20,7 +20,6 @@ async def lifespan(app: FastAPI):
     finally:
         await shutdown_compiled_app()
         await close_postgres_pool()
-        await KnowledgeGraphBuilder.shutdown_shared()
         close_opensearch_client()
 
 
@@ -40,6 +39,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(catalog_router)
 
 
 def run():

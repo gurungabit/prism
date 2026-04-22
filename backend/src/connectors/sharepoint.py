@@ -1,9 +1,16 @@
+"""File-based SharePoint connector (Phase 1 stub).
+
+Phase 1 declares SharePoint sources by local path. The plan puts the proper
+Microsoft Graph integration in Phase 2, at which point the source config
+will carry a site URL + credentials instead of a ``path``.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
 
-from src.connectors.base import Connector, ConnectorRegistry
+from src.connectors.base import Connector, ConnectorRegistry, SourceConfig, resolve_local_path
 from src.models.document import DocumentMetadata, DocumentRef, RawDocument
 
 SHAREPOINT_EXTENSIONS = {".docx", ".pdf", ".md", ".txt", ".html", ".htm"}
@@ -11,6 +18,10 @@ SHAREPOINT_EXTENSIONS = {".docx", ".pdf", ".md", ".txt", ".html", ".htm"}
 
 class SharePointConnector(Connector):
     platform = "sharepoint"
+
+    def __init__(self, source: SourceConfig) -> None:
+        super().__init__(source)
+        self.base_dir: Path = resolve_local_path(source)
 
     def list_documents(self) -> list[DocumentRef]:
         refs = []

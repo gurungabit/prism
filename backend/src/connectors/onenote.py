@@ -1,9 +1,16 @@
+"""File-based OneNote connector (Phase 1 stub).
+
+OneNote exports to HTML; the connector just walks a directory and pulls every
+``.html``/``.htm``/``.md``/``.txt`` file. Phase 2 would pull direct from
+OneNote via Graph using the source's declared notebook path.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
 
-from src.connectors.base import Connector, ConnectorRegistry
+from src.connectors.base import Connector, ConnectorRegistry, SourceConfig, resolve_local_path
 from src.models.document import DocumentMetadata, DocumentRef, RawDocument
 
 ONENOTE_EXTENSIONS = {".html", ".htm", ".md", ".txt"}
@@ -12,13 +19,16 @@ ONENOTE_EXTENSIONS = {".html", ".htm", ".md", ".txt"}
 class OneNoteConnector(Connector):
     platform = "onenote"
 
+    def __init__(self, source: SourceConfig) -> None:
+        super().__init__(source)
+        self.base_dir: Path = resolve_local_path(source)
+
     def list_documents(self) -> list[DocumentRef]:
         refs = []
         for path in self.base_dir.rglob("*"):
             if not path.is_file():
                 continue
             if path.suffix.lower() in ONENOTE_EXTENSIONS:
-                section = path.parent.name if path.parent != self.base_dir else ""
                 refs.append(
                     DocumentRef(
                         source_platform="onenote",
