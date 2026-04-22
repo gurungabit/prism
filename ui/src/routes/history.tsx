@@ -33,7 +33,7 @@ export function HistoryPage() {
   const deleteAnalysis = useDeleteAnalysis();
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; req: string } | null>(null);
 
-  const analyses = history.data?.analyses ?? [];
+  const threads = history.data?.threads ?? [];
   const total = history.data?.total ?? 0;
   const hasNext = offset + limit < total;
   const hasPrev = offset > 0;
@@ -64,31 +64,36 @@ export function HistoryPage() {
             <Skeleton className="h-3 w-1/4" />
           </div>
         </div>
-      ) : analyses.length > 0 ? (
+      ) : threads.length > 0 ? (
         <>
           <div className="space-y-0">
-            {analyses.map((run) => (
+            {threads.map((thread) => (
               <Link
-                key={run.analysis_id}
+                key={thread.thread_id}
                 to="/analyze/$runId"
-                params={{ runId: run.analysis_id }}
+                params={{ runId: thread.thread_id }}
                 className="flex items-center justify-between py-3 border-b border-zinc-100 dark:border-zinc-800/30 last:border-0 hover:bg-zinc-50/50 dark:hover:bg-zinc-800/20 -mx-2 px-2 rounded-md transition-colors group"
               >
                 <div className="flex-1 min-w-0 mr-4">
                   <p className="text-[13px] text-zinc-800 dark:text-zinc-200 truncate group-hover:text-[var(--color-accent)] dark:group-hover:text-[var(--color-accent-dark)] transition-colors">
-                    {run.requirement}
+                    {thread.requirement}
                   </p>
                   <div className="flex items-center gap-3 mt-1">
                     <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
-                      {timeAgo(run.created_at)}
+                      {timeAgo(thread.last_turn_at)}
                     </span>
-                    {run.duration_seconds != null && (
+                    {thread.turn_count > 1 && (
+                      <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
+                        {thread.turn_count} turns
+                      </span>
+                    )}
+                    {thread.duration_seconds != null && (
                       <span className="text-[11px] font-mono text-zinc-400 dark:text-zinc-500">
-                        {run.duration_seconds < 60
-                          ? `${Math.round(run.duration_seconds)}s`
-                          : run.duration_seconds < 3600
-                            ? `${Math.floor(run.duration_seconds / 60)}m ${Math.round(run.duration_seconds % 60)}s`
-                            : `${Math.floor(run.duration_seconds / 3600)}h ${Math.floor((run.duration_seconds % 3600) / 60)}m`}
+                        {thread.duration_seconds < 60
+                          ? `${Math.round(thread.duration_seconds)}s`
+                          : thread.duration_seconds < 3600
+                            ? `${Math.floor(thread.duration_seconds / 60)}m ${Math.round(thread.duration_seconds % 60)}s`
+                            : `${Math.floor(thread.duration_seconds / 3600)}h ${Math.floor((thread.duration_seconds % 3600) / 60)}m`}
                       </span>
                     )}
                   </div>
@@ -96,17 +101,17 @@ export function HistoryPage() {
 
                 <div className="flex items-center gap-2 flex-shrink-0">
                   <Badge
-                    variant={statusVariant[run.status] || "neutral"}
+                    variant={statusVariant[thread.status] || "neutral"}
                     size="sm"
                   >
-                    {run.status}
+                    {thread.status}
                   </Badge>
                   <button
                     type="button"
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
-                      setDeleteTarget({ id: run.analysis_id, req: run.requirement });
+                      setDeleteTarget({ id: thread.thread_id, req: thread.requirement });
                     }}
                     className="p-1.5 rounded-lg text-zinc-300 dark:text-zinc-600 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 opacity-0 group-hover:opacity-100 transition-all"
                   >

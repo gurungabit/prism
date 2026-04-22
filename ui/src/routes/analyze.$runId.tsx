@@ -1,6 +1,16 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import type { ReactNode } from "react";
-import { useParams, Link } from "@tanstack/react-router";
+import { useNavigate, useParams, Link } from "@tanstack/react-router";
+import { useThread, useStartAnalysis } from "../hooks/useAnalysis";
+import type { FormEvent } from "react";
+import {
+  CheckCircle2,
+  FlaskConical,
+  Loader2,
+  MessageCircle,
+  Send,
+} from "lucide-react";
+import type { ThreadTurn } from "../lib/api";
 import { useAnalysisStream } from "../hooks/useAnalysisStream";
 import { TimelineStep } from "../components/analysis/AgentCard";
 import { PipelineDiagram } from "../components/analysis/PipelineDiagram";
@@ -394,8 +404,10 @@ function EventLogSection({
   );
 }
 
-export function AnalyzeRunPage() {
-  const { runId } = useParams({ strict: false }) as { runId: string };
+// SingleRunPanel renders one run's live/completed state -- the existing
+// monolithic view. The thread route component above it decides when to
+// mount this (for the active turn) vs. a compact card for prior turns.
+export function SingleRunPanel({ runId }: { runId: string }) {
   const stream = useAnalysisStream();
   const timelineEndRef = useRef<HTMLDivElement>(null);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
@@ -1294,5 +1306,416 @@ export function AnalyzeRunPage() {
         </div>
       )}
     </div>
+  );
+}
+
+
+// ═══ THREAD PAGE ═════════════════════════════════════════════════════════
+// The route component. The URL segment is interpreted as a thread id (or any
+// run id within a thread -- we resolve either way). For single-turn threads
+// this degenerates to the old single-run page. For multi-turn threads it
+// renders the prior turns as stacked cards above the active run.
+
+export function AnalyzeRunPage() {
+  const { runId: urlId } = useParams({ strict: false }) as { runId: string };
+  const navigate = useNavigate();
+
+  // Refetch every 3s while anything is running -- the backend writes the
+  // new turn's row as soon as /api/analyze returns, and the planner +
+  // streaming events trail; polling keeps the thread view in sync without
+  // threading SSE through every turn.
+  const thread = useThread(urlId, 3000);
+  const turns = thread.data?.turns ?? [];
+  const threadId = thread.data?.thread_id ?? urlId;
+
+  // Redirect the URL to the canonical thread id the first time we resolve
+  // a non-root run_id. Keeps browser history / bookmarks stable.
+  useEffect(() => {
+    if (thread.data && thread.data.thread_id !== urlId) {
+      navigate({
+        to: "/analyze/$runId",
+        params: { runId: thread.data.thread_id },
+        replace: true,
+      });
+    }
+  }, [thread.data?.thread_id, urlId, navigate]);
+
+  const startAnalysis = useStartAnalysis();
+
+  const hasRunning = turns.some((t) => t.status === "running");
+  const activeTurn = [...turns].reverse().find((t) => t.status === "running") ?? turns[turns.length - 1];
+
+  async function submitFollowUp(text: string, forceFull: boolean) {
+    if (!activeTurn) return;
+    const result = await startAnalysis.mutateAsync({
+      requirement: text,
+      parent_analysis_id: activeTurn.analysis_id,
+      force_full: forceFull,
+    });
+    // URL stays on the thread; the new turn appears when the polling
+    // query refetches. Kick a manual refetch to shorten the delay.
+    await thread.refetch();
+    return result;
+  }
+
+  if (thread.isLoading) {
+    return (
+      <div className="max-w-[1200px] mx-auto px-6 py-8 space-y-4">
+        <div className="h-5 w-48 bg-zinc-100 dark:bg-zinc-800/50 rounded animate-pulse" />
+        <div className="h-32 w-full bg-zinc-100 dark:bg-zinc-800/50 rounded-lg animate-pulse" />
+      </div>
+    );
+  }
+
+  if (thread.isError || turns.length === 0) {
+    return (
+      <div className="max-w-[720px] mx-auto px-6 py-16">
+        <div className="flex items-center gap-2 text-rose-600 dark:text-rose-400">
+          <AlertTriangle className="w-4 h-4" />
+          <span className="text-[13px]">
+            {thread.error instanceof Error ? thread.error.message : "Thread not found"}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  const rootRequirement = turns[0]?.requirement ?? "Analysis";
+
+  return (
+    <div className="max-w-[1200px] mx-auto px-6 py-6 pb-28 space-y-4">
+      {/* Thread header -- one root requirement, N turns */}
+      <div className="pb-4 border-b border-zinc-200/60 dark:border-zinc-700/30 space-y-2">
+        <div className="flex items-start gap-3 min-w-0">
+          <Link
+            to="/analyze"
+            className="mt-1 p-1.5 rounded-lg text-zinc-300 dark:text-zinc-600 hover:text-zinc-500 dark:hover:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700/30 transition-colors flex-shrink-0"
+          >
+            <ArrowLeft className="w-4 h-4" />
+          </Link>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-400 dark:text-zinc-500">
+              Thread
+            </p>
+            <h1 className="text-[18px] sm:text-[21px] font-semibold tracking-tight leading-[1.2] text-zinc-900 dark:text-zinc-100 whitespace-normal break-words">
+              {rootRequirement}
+            </h1>
+            <p className="text-[11px] text-zinc-400 dark:text-zinc-500 mt-1.5 font-mono">
+              {threadId} · {turns.length} {turns.length === 1 ? "turn" : "turns"}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Stacked turns, oldest first. The latest turn is expanded by default;
+          if there's a running turn, it also gets rendered live. */}
+      <div className="space-y-3">
+        {turns.map((turn, i) => {
+          const isLatest = i === turns.length - 1;
+          return (
+            <ThreadTurnCard
+              key={turn.analysis_id}
+              turn={turn}
+              turnIndex={i + 1}
+              totalTurns={turns.length}
+              defaultOpen={isLatest}
+              onRunFullAnalysis={
+                turn.kind === "chat" && turn.status === "complete"
+                  ? async () => {
+                      await submitFollowUp(turn.requirement, true);
+                    }
+                  : undefined
+              }
+            />
+          );
+        })}
+      </div>
+
+      {/* Follow-up input stays sticky at the bottom of the page so the user
+          can always tack on another turn without scrolling. */}
+      <FollowUpBar
+        disabled={hasRunning || startAnalysis.isPending}
+        pendingLabel={hasRunning ? "Waiting for previous turn..." : "Thinking..."}
+        onSubmit={(text: string) => submitFollowUp(text, false)}
+      />
+    </div>
+  );
+}
+
+
+// ── ThreadTurnCard ─────────────────────────────────────────────────────────
+// A single turn inside a thread. Renders as a collapsible card. Chat turns
+// render as message bubbles; full turns embed SingleRunPanel (live or
+// completed) when expanded.
+
+interface ThreadTurnCardProps {
+  turn: ThreadTurn;
+  turnIndex: number;
+  totalTurns: number;
+  defaultOpen: boolean;
+  onRunFullAnalysis?: () => void | Promise<void>;
+}
+
+function ThreadTurnCard({
+  turn,
+  turnIndex,
+  totalTurns,
+  defaultOpen,
+  onRunFullAnalysis,
+}: ThreadTurnCardProps) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  if (turn.kind === "chat") {
+    return <ChatTurnCard turn={turn} onRunFullAnalysis={onRunFullAnalysis} />;
+  }
+
+  return (
+    <FullTurnCard
+      turn={turn}
+      turnIndex={turnIndex}
+      totalTurns={totalTurns}
+      open={open}
+      onToggle={() => setOpen(!open)}
+    />
+  );
+}
+
+function ChatTurnCard({
+  turn,
+  onRunFullAnalysis,
+}: {
+  turn: ThreadTurn;
+  onRunFullAnalysis?: () => void | Promise<void>;
+}) {
+  const answer = turn.report?.chat_answer?.answer ?? "";
+  const citedPaths = turn.report?.chat_answer?.cited_paths ?? [];
+  const isRunning = turn.status === "running";
+  const [triggering, setTriggering] = useState(false);
+
+  return (
+    <div className="rounded-lg border border-zinc-200/70 dark:border-zinc-700/40 bg-white dark:bg-[#1e1e20] px-4 py-3 space-y-2">
+      <div className="flex items-start gap-2 text-[12px]">
+        <MessageCircle className="w-3.5 h-3.5 text-[var(--color-accent)] dark:text-[var(--color-accent-dark)] mt-0.5 flex-shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="text-[11px] font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500 mb-0.5">
+            Follow-up · chat
+          </div>
+          <div className="text-[13px] text-zinc-700 dark:text-zinc-300 font-medium">
+            {turn.requirement}
+          </div>
+        </div>
+      </div>
+
+      {isRunning ? (
+        <div className="flex items-center gap-2 text-[12px] text-zinc-500 dark:text-zinc-400 pl-5">
+          <Loader2 className="w-3 h-3 animate-spin" />
+          Answering from prior context...
+        </div>
+      ) : (
+        <div className="pl-5 space-y-2">
+          <p className="text-[13px] text-zinc-700 dark:text-zinc-300 leading-relaxed whitespace-pre-wrap">
+            {answer || "(no answer)"}
+          </p>
+
+          {citedPaths.length > 0 && (
+            <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
+              {citedPaths.slice(0, 5).map((p, i) => (
+                <span
+                  key={i}
+                  className="font-mono text-zinc-400 dark:text-zinc-500 break-all"
+                >
+                  {p}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {onRunFullAnalysis && (
+            <div className="pt-1">
+              <Button
+                variant="secondary"
+                size="sm"
+                loading={triggering}
+                icon={<FlaskConical className="w-3 h-3" />}
+                onClick={async () => {
+                  setTriggering(true);
+                  try {
+                    await onRunFullAnalysis();
+                  } finally {
+                    setTriggering(false);
+                  }
+                }}
+              >
+                Run full analysis
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FullTurnCard({
+  turn,
+  turnIndex,
+  totalTurns,
+  open,
+  onToggle,
+}: {
+  turn: ThreadTurn;
+  turnIndex: number;
+  totalTurns: number;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const isRunning = turn.status === "running";
+  const isComplete = turn.status === "complete";
+
+  // Prefer the exec summary; fall back to the rolling summary if synthesis
+  // didn't populate one (e.g. mid-run).
+  const previewText = useMemo(() => {
+    const exec = (turn.report as any)?.executive_summary;
+    if (typeof exec === "string" && exec.trim()) return exec;
+    if (turn.rolling_summary) return turn.rolling_summary;
+    return isRunning ? "Analysis running..." : "(no summary)";
+  }, [turn, isRunning]);
+
+  return (
+    <div className="rounded-lg border border-zinc-200/70 dark:border-zinc-700/40 bg-white dark:bg-[#1e1e20] overflow-hidden">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full text-left px-4 py-3 flex items-start gap-3 hover:bg-zinc-50 dark:hover:bg-zinc-800/30 transition-colors"
+      >
+        <ChevronRight
+          className={`w-3.5 h-3.5 text-zinc-400 dark:text-zinc-500 mt-1 flex-shrink-0 transition-transform ${
+            open ? "rotate-90" : ""
+          }`}
+        />
+        <div className="flex-1 min-w-0 space-y-1">
+          <div className="flex items-center gap-2 text-[11px]">
+            <span className="font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+              Turn {turnIndex} of {totalTurns} · full
+            </span>
+            {isRunning && (
+              <Badge variant="info" size="sm">
+                <Loader2 className="w-2.5 h-2.5 mr-1 animate-spin" />
+                Running
+              </Badge>
+            )}
+            {isComplete && (
+              <Badge variant="success" size="sm">
+                <CheckCircle2 className="w-2.5 h-2.5 mr-1" />
+                Complete
+              </Badge>
+            )}
+          </div>
+          <div className="text-[13px] font-medium text-zinc-900 dark:text-zinc-100 truncate">
+            {turn.requirement}
+          </div>
+          {!open && (
+            <p className="text-[12px] text-zinc-500 dark:text-zinc-400 line-clamp-2 leading-relaxed">
+              {previewText}
+            </p>
+          )}
+        </div>
+      </button>
+
+      {open && (
+        <div className="border-t border-zinc-200/70 dark:border-zinc-700/40">
+          {isRunning || isComplete ? (
+            // Reuse the single-run panel. It handles both live streaming and
+            // the completed report read-back based on /api/analyze/<id>/report.
+            <SingleRunPanel runId={turn.analysis_id} />
+          ) : (
+            <div className="px-6 py-6 text-[12px] text-zinc-500 dark:text-zinc-400">
+              This run didn't complete successfully. Status: {turn.status}.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ── FollowUpBar ────────────────────────────────────────────────────────────
+
+function FollowUpBar({
+  disabled,
+  pendingLabel,
+  onSubmit,
+}: {
+  disabled: boolean;
+  pendingLabel: string;
+  onSubmit: (text: string) => void | Promise<unknown>;
+}) {
+  const [text, setText] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    const trimmed = text.trim();
+    if (!trimmed || disabled || submitting) return;
+    setSubmitting(true);
+    try {
+      await onSubmit(trimmed);
+      setText("");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const busy = disabled || submitting;
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="fixed bottom-0 left-0 right-0 z-30 border-t border-zinc-200 dark:border-zinc-700/50 bg-white/95 dark:bg-[#18181b]/95 backdrop-blur-sm"
+    >
+      <div className="max-w-[1200px] mx-auto px-6 py-3">
+        <div className="flex items-end gap-2 rounded-xl border border-zinc-200 dark:border-zinc-700/60 bg-white dark:bg-[#1e1e20] px-3 py-2 focus-within:border-[var(--color-accent)] dark:focus-within:border-[var(--color-accent-dark)] transition-colors">
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={
+              busy
+                ? pendingLabel
+                : "Ask a follow-up. I'll answer from prior context, or run a full analysis if needed."
+            }
+            rows={1}
+            disabled={busy}
+            className="flex-1 bg-transparent outline-none resize-none text-[13px] text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 leading-relaxed min-h-[22px] max-h-[200px]"
+            onInput={(e) => {
+              const el = e.currentTarget;
+              el.style.height = "auto";
+              el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleSubmit(e as unknown as FormEvent);
+              }
+            }}
+          />
+          <button
+            type="submit"
+            disabled={busy || !text.trim()}
+            aria-label="Send follow-up"
+            className="p-1.5 rounded-lg bg-[var(--color-accent)] dark:bg-[var(--color-accent-dark)] text-white dark:text-zinc-900 disabled:opacity-40 disabled:pointer-events-none transition-opacity"
+          >
+            {submitting ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Send className="w-4 h-4" />
+            )}
+          </button>
+        </div>
+        <p className="text-[10px] text-zinc-400 dark:text-zinc-600 mt-1.5">
+          Enter sends · Shift+Enter for newline
+        </p>
+      </div>
+    </form>
   );
 }

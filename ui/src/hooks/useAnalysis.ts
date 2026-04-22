@@ -5,6 +5,8 @@ import {
   getTrace,
   getHistory,
   deleteAnalysis,
+  getThread,
+  resolveAnalysisThread,
   type AnalysisInput,
 } from "../lib/api";
 import { PRISMReportSchema } from "../lib/schemas";
@@ -57,5 +59,24 @@ export function useDeleteAnalysis() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["history"] });
     },
+  });
+}
+
+export function useThread(threadOrRunId: string | null, refetchInterval?: number) {
+  return useQuery({
+    queryKey: ["thread", threadOrRunId],
+    queryFn: () => getThread(threadOrRunId!),
+    enabled: !!threadOrRunId,
+    staleTime: 5_000,
+    refetchInterval,
+  });
+}
+
+export function useResolveThread(analysisId: string | null) {
+  return useQuery({
+    queryKey: ["resolve-thread", analysisId],
+    queryFn: () => resolveAnalysisThread(analysisId!),
+    enabled: !!analysisId,
+    staleTime: Infinity,
   });
 }

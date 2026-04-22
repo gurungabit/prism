@@ -261,7 +261,7 @@ export function DashboardPage() {
         </div>
       )}
 
-      {history.data && history.data.analyses.length > 0 && (
+      {history.data && history.data.threads.length > 0 && (
         <div className="border-t border-zinc-200/60 dark:border-zinc-700/30 pt-6">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
@@ -275,19 +275,20 @@ export function DashboardPage() {
             </Link>
           </div>
           <div className="space-y-0">
-            {history.data.analyses.map((run) => (
+            {history.data.threads.map((thread) => (
               <Link
-                key={run.analysis_id}
+                key={thread.thread_id}
                 to="/analyze/$runId"
-                params={{ runId: run.analysis_id }}
+                params={{ runId: thread.thread_id }}
                 className="flex items-center justify-between py-2.5 -mx-2 px-2 rounded-md hover:bg-zinc-50 dark:hover:bg-zinc-800/30 transition-colors group"
               >
                 <div className="flex-1 min-w-0 mr-3">
                   <p className="text-[12px] text-zinc-700 dark:text-zinc-300 truncate group-hover:text-[var(--color-accent)] dark:group-hover:text-[var(--color-accent-dark)] transition-colors">
-                    {run.requirement}
+                    {thread.requirement}
                   </p>
                   <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
-                    {timeAgo(run.created_at)}
+                    {timeAgo(thread.last_turn_at)}
+                    {thread.turn_count > 1 && ` · ${thread.turn_count} turns`}
                   </span>
                 </div>
                 <ChevronRight className="w-3 h-3 text-zinc-300 dark:text-zinc-700 group-hover:text-zinc-400 transition-colors" />
