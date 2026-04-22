@@ -1443,6 +1443,11 @@ export function AnalyzeRunPage() {
               turnIndex={i + 1}
               totalTurns={turns.length}
               defaultOpen={isLatest}
+              // The first turn's requirement is already shown as the thread
+              // title; showing it again as a bubble would be a duplicate.
+              // Every follow-up turn gets a bubble so the page reads like a
+              // conversation.
+              showUserBubble={i > 0}
               onRunFullAnalysis={
                 turn.kind === "chat" && turn.status === "complete"
                   ? async () => {
@@ -1484,6 +1489,7 @@ interface ThreadTurnCardProps {
   turnIndex: number;
   totalTurns: number;
   defaultOpen: boolean;
+  showUserBubble: boolean;
   onRunFullAnalysis?: () => void | Promise<void>;
 }
 
@@ -1493,21 +1499,41 @@ function ThreadTurnCard({
   totalTurns,
   defaultOpen,
   onRunFullAnalysis,
+  showUserBubble,
 }: ThreadTurnCardProps) {
   const [open, setOpen] = useState(defaultOpen);
 
+  // Every turn gets a user-bubble for its requirement -- chat turns had
+  // this already, full turns used to bury it in the card title. Surfacing
+  // it here makes the thread read like a conversation regardless of mode.
+  const bubble = showUserBubble && (
+    <div className="flex justify-end">
+      <div className="max-w-[75%] bg-zinc-100 dark:bg-zinc-700/40 rounded-2xl rounded-br-md px-4 py-2.5 text-[13px] text-zinc-800 dark:text-zinc-200 leading-relaxed whitespace-pre-wrap">
+        {turn.requirement}
+      </div>
+    </div>
+  );
+
   if (turn.kind === "chat") {
-    return <ChatTurnCard turn={turn} onRunFullAnalysis={onRunFullAnalysis} />;
+    return (
+      <div className="space-y-3">
+        {bubble}
+        <ChatTurnCard turn={turn} onRunFullAnalysis={onRunFullAnalysis} />
+      </div>
+    );
   }
 
   return (
-    <FullTurnCard
-      turn={turn}
-      turnIndex={turnIndex}
-      totalTurns={totalTurns}
-      open={open}
-      onToggle={() => setOpen(!open)}
-    />
+    <div className="space-y-3">
+      {bubble}
+      <FullTurnCard
+        turn={turn}
+        turnIndex={turnIndex}
+        totalTurns={totalTurns}
+        open={open}
+        onToggle={() => setOpen(!open)}
+      />
+    </div>
   );
 }
 
@@ -1523,18 +1549,10 @@ function ChatTurnCard({
   const isRunning = turn.status === "running";
   const [triggering, setTriggering] = useState(false);
 
-  // Chat-style layout: user question right-aligned as a bubble, answer
-  // left-aligned as prose. Matches the /chat page conventions.
+  // User bubble is rendered by ThreadTurnCard; here we just show the
+  // assistant response as prose.
   return (
     <div className="space-y-3">
-      {/* User bubble */}
-      <div className="flex justify-end">
-        <div className="max-w-[75%] bg-zinc-100 dark:bg-zinc-700/40 rounded-2xl rounded-br-md px-4 py-2.5 text-[13px] text-zinc-800 dark:text-zinc-200 leading-relaxed whitespace-pre-wrap">
-          {turn.requirement}
-        </div>
-      </div>
-
-      {/* Assistant response */}
       {isRunning ? (
         <div className="flex items-center gap-2 text-[13px] text-zinc-500 dark:text-zinc-400">
           <Loader2 className="w-3.5 h-3.5 animate-spin" />
