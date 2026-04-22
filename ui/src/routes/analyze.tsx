@@ -199,28 +199,28 @@ export function AnalyzePage() {
           </div>
         </form>
 
-        {history.data && history.data.analyses.length > 0 && (
+        {history.data && history.data.threads.length > 0 && (
           <div className="mt-12 pt-6 border-t border-zinc-100 dark:border-zinc-700/40">
             <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
               Recent
             </span>
             <div className="mt-3 space-y-0.5">
-              {history.data.analyses.map((run) => (
+              {history.data.threads.map((thread) => (
                 <Link
-                  key={run.analysis_id}
+                  key={thread.thread_id}
                   to="/analyze/$runId"
-                  params={{ runId: run.analysis_id }}
+                  params={{ runId: thread.thread_id }}
                   className="flex items-center justify-between px-3 py-2.5 -mx-3 rounded-lg hover:bg-zinc-50 dark:hover:bg-zinc-700/30 transition-colors duration-150 group analyze-history-item"
                 >
                   <div className="flex items-center gap-3 min-w-0">
                     <span className="text-[12px] text-zinc-500 dark:text-zinc-400 truncate group-hover:text-[var(--color-accent)] dark:group-hover:text-[var(--color-accent-dark)] transition-colors duration-150">
-                      {run.requirement}
+                      {thread.requirement}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0 ml-3">
                     <span className="flex items-center gap-1 text-[10px] text-zinc-300 dark:text-zinc-600">
                       <Clock className="w-2.5 h-2.5" />
-                      {timeAgo(run.created_at)}
+                      {timeAgo(thread.last_turn_at)}
                     </span>
                     <ChevronRight className="w-3 h-3 text-zinc-300 dark:text-zinc-700 group-hover:text-[var(--color-accent)] dark:group-hover:text-[var(--color-accent-dark)] transition-colors duration-150" />
                   </div>

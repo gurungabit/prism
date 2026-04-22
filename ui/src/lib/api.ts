@@ -37,10 +37,15 @@ export interface AnalysisInput {
   known_teams?: string;
   known_services?: string;
   questions_to_answer?: string;
+  // Threading: present on follow-ups to link the new run into an existing
+  // thread. ``force_full`` makes a follow-up run a full analysis even when
+  // the planner would otherwise pick chat mode.
+  parent_analysis_id?: string;
+  force_full?: boolean;
 }
 
 export function startAnalysis(input: AnalysisInput) {
-  return request<{ analysis_id: string; stream_url: string }>(
+  return request<{ analysis_id: string; thread_id: string; stream_url: string }>(
     "/api/analyze",
     { method: "POST", body: JSON.stringify(input) },
   );
@@ -150,18 +155,20 @@ export function healthCheck() {
   return request<{ status: string; service: string }>("/api/health");
 }
 
-// ── History ───────────────────────────────────────────
+// ── History (threads) ─────────────────────────────────
 
-export interface HistoryEntry {
-  analysis_id: string;
+export interface ThreadSummary {
+  thread_id: string;
+  turn_count: number;
+  started_at: string;
+  last_turn_at: string;
   requirement: string;
   status: string;
-  created_at: string;
   duration_seconds: number | null;
 }
 
 export function getHistory(limit = 20, offset = 0) {
-  return request<{ analyses: HistoryEntry[]; total: number }>(
+  return request<{ threads: ThreadSummary[]; total: number }>(
     `/api/history?limit=${limit}&offset=${offset}`,
   );
 }
@@ -170,6 +177,39 @@ export function deleteAnalysis(analysisId: string) {
   return request<{ status: string; analysis_id: string }>(
     `/api/history/${analysisId}`,
     { method: "DELETE" },
+  );
+}
+
+// ── Threads (multi-turn analyses) ─────────────────────
+
+export interface ThreadTurnReport {
+  // PRISMReport shape, plus chat-turn extras the backend adds before
+  // persisting. We keep the type loose here and let the UI branch on kind.
+  [k: string]: unknown;
+  chat_answer?: { answer: string; cited_paths: string[] };
+}
+
+export interface ThreadTurn {
+  analysis_id: string;
+  parent_analysis_id: string | null;
+  kind: "full" | "chat";
+  requirement: string;
+  status: string;
+  created_at: string | null;
+  duration_seconds: number | null;
+  rolling_summary: string;
+  report: ThreadTurnReport | null;
+}
+
+export function getThread(threadIdOrRunId: string) {
+  return request<{ thread_id: string; turns: ThreadTurn[] }>(
+    `/api/threads/${threadIdOrRunId}`,
+  );
+}
+
+export function resolveAnalysisThread(analysisId: string) {
+  return request<{ analysis_id: string; thread_id: string }>(
+    `/api/analyze/resolve/${analysisId}`,
   );
 }
 
