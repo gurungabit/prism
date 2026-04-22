@@ -2,15 +2,14 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import type { ReactNode } from "react";
 import { useNavigate, useParams, Link } from "@tanstack/react-router";
 import { useThread, useStartAnalysis } from "../hooks/useAnalysis";
-import type { FormEvent } from "react";
 import {
   CheckCircle2,
   FlaskConical,
   Loader2,
   MessageCircle,
-  Send,
 } from "lucide-react";
 import type { ThreadTurn } from "../lib/api";
+import { ChatInput } from "../components/chat/ChatInput";
 import { useAnalysisStream } from "../hooks/useAnalysisStream";
 import { TimelineStep } from "../components/analysis/AgentCard";
 import { PipelineDiagram } from "../components/analysis/PipelineDiagram";
@@ -1383,7 +1382,11 @@ export function AnalyzeRunPage() {
   const rootRequirement = turns[0]?.requirement ?? "Analysis";
 
   return (
-    <div className="max-w-[1200px] mx-auto px-6 py-6 pb-28 space-y-4">
+    // Flex-column that fills the main scroll area. The body scrolls
+    // internally; the follow-up input is a flex-end child so it stays
+    // pinned at the viewport bottom regardless of content length.
+    <div className="flex flex-col h-full max-w-[1200px] mx-auto">
+      <div className="flex-1 overflow-y-auto px-6 py-6 space-y-4">
       {/* Thread header -- one root requirement, N turns */}
       <div className="pb-4 border-b border-zinc-200/60 dark:border-zinc-700/30 space-y-2">
         <div className="flex items-start gap-3 min-w-0">
@@ -1430,14 +1433,23 @@ export function AnalyzeRunPage() {
           );
         })}
       </div>
+      </div>
 
-      {/* Follow-up input stays sticky at the bottom of the page so the user
-          can always tack on another turn without scrolling. */}
-      <FollowUpBar
-        disabled={hasRunning || startAnalysis.isPending}
-        pendingLabel={hasRunning ? "Waiting for previous turn..." : "Thinking..."}
-        onSubmit={(text: string) => submitFollowUp(text, false)}
-      />
+      {/* Input pinned at bottom of the flex column. ChatInput matches the
+          /chat page's affordance so users get consistent muscle memory. */}
+      <div className="border-t border-zinc-200/60 dark:border-zinc-700/30 bg-[#fafaf9] dark:bg-[#131315]">
+        <ChatInput
+          disabled={hasRunning || startAnalysis.isPending}
+          placeholder={
+            hasRunning
+              ? "Waiting for previous turn..."
+              : "Ask a follow-up. I'll answer from prior context, or run a full analysis if needed."
+          }
+          onSend={(text) => {
+            void submitFollowUp(text, false);
+          }}
+        />
+      </div>
     </div>
   );
 }
@@ -1640,82 +1652,3 @@ function FullTurnCard({
 }
 
 
-// ── FollowUpBar ────────────────────────────────────────────────────────────
-
-function FollowUpBar({
-  disabled,
-  pendingLabel,
-  onSubmit,
-}: {
-  disabled: boolean;
-  pendingLabel: string;
-  onSubmit: (text: string) => void | Promise<unknown>;
-}) {
-  const [text, setText] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    const trimmed = text.trim();
-    if (!trimmed || disabled || submitting) return;
-    setSubmitting(true);
-    try {
-      await onSubmit(trimmed);
-      setText("");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  const busy = disabled || submitting;
-
-  return (
-    <form
-      onSubmit={handleSubmit}
-      className="fixed bottom-0 left-0 right-0 z-30 border-t border-zinc-200 dark:border-zinc-700/50 bg-white/95 dark:bg-[#18181b]/95 backdrop-blur-sm"
-    >
-      <div className="max-w-[1200px] mx-auto px-6 py-3">
-        <div className="flex items-end gap-2 rounded-xl border border-zinc-200 dark:border-zinc-700/60 bg-white dark:bg-[#1e1e20] px-3 py-2 focus-within:border-[var(--color-accent)] dark:focus-within:border-[var(--color-accent-dark)] transition-colors">
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder={
-              busy
-                ? pendingLabel
-                : "Ask a follow-up. I'll answer from prior context, or run a full analysis if needed."
-            }
-            rows={1}
-            disabled={busy}
-            className="flex-1 bg-transparent outline-none resize-none text-[13px] text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 leading-relaxed min-h-[22px] max-h-[200px]"
-            onInput={(e) => {
-              const el = e.currentTarget;
-              el.style.height = "auto";
-              el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSubmit(e as unknown as FormEvent);
-              }
-            }}
-          />
-          <button
-            type="submit"
-            disabled={busy || !text.trim()}
-            aria-label="Send follow-up"
-            className="p-1.5 rounded-lg bg-[var(--color-accent)] dark:bg-[var(--color-accent-dark)] text-white dark:text-zinc-900 disabled:opacity-40 disabled:pointer-events-none transition-opacity"
-          >
-            {submitting ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Send className="w-4 h-4" />
-            )}
-          </button>
-        </div>
-        <p className="text-[10px] text-zinc-400 dark:text-zinc-600 mt-1.5">
-          Enter sends · Shift+Enter for newline
-        </p>
-      </div>
-    </form>
-  );
-}

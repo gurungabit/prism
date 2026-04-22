@@ -26,7 +26,9 @@ export function RootLayout() {
         <TopBar />
         <main className="flex-1 overflow-y-auto">
           <Suspense fallback={<RouteSkeleton />}>
-            <div className="animate-fade-in">
+            {/* h-full cascades the main's height down so thread-style pages
+                can use flex-column + h-full to pin a footer input. */}
+            <div className="animate-fade-in h-full">
               <Outlet />
             </div>
           </Suspense>
