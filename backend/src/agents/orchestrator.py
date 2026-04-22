@@ -224,6 +224,27 @@ async def plan_node(state: OrchestratorState) -> dict:
         skipped=skipped,
     )
 
+    # Flip the DB row's ``kind`` now so the thread-view UI can switch from
+    # the placeholder loading state to the mode-appropriate layout (chat
+    # bubble vs full SingleRunPanel) while the run is still in flight.
+    try:
+        from src.ingestion.analysis_store import AnalysisRepository
+
+        repo = await AnalysisRepository.create()
+        async with repo.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE analyses SET kind = $2 WHERE analysis_id = $1",
+                analysis_id,
+                plan_dict["mode"],
+            )
+        await repo.close()
+    except Exception as db_err:  # noqa: BLE001
+        log.warning(
+            "analysis_kind_update_failed",
+            analysis_id=analysis_id,
+            error=str(db_err),
+        )
+
     if on_step:
         if plan_dict["mode"] == "chat":
             detail = f"[chat] {plan_dict['reasoning'][:80]}"

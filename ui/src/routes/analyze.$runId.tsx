@@ -1514,6 +1514,18 @@ function ThreadTurnCard({
     </div>
   );
 
+  // Pending: planner hasn't decided yet. Show a lightweight typing-
+  // indicator in chat style so the user sees acknowledgement without the
+  // full pipeline view flashing first.
+  if (turn.kind === "pending") {
+    return (
+      <div className="space-y-3">
+        {bubble}
+        <PendingTurnIndicator />
+      </div>
+    );
+  }
+
   if (turn.kind === "chat") {
     return (
       <div className="space-y-3">
@@ -1533,6 +1545,15 @@ function ThreadTurnCard({
         open={open}
         onToggle={() => setOpen(!open)}
       />
+    </div>
+  );
+}
+
+function PendingTurnIndicator() {
+  return (
+    <div className="flex items-center gap-2 text-[13px] text-zinc-500 dark:text-zinc-400">
+      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+      Thinking...
     </div>
   );
 }
