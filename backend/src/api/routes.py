@@ -113,15 +113,16 @@ async def start_analysis(request: AnalyzeRequest, background_tasks: BackgroundTa
 
     try:
         repo = await AnalysisRepository.create()
+        # Kind starts as 'pending' -- the planner updates it to 'full' or
+        # 'chat' as soon as it decides. The thread UI renders a neutral
+        # "thinking..." state while kind=='pending' so follow-ups don't
+        # briefly flash the full pipeline view before the planner resolves.
         await repo.insert(
             analysis_id,
             request.requirement,
             thread_id=thread_id,
             parent_analysis_id=request.parent_analysis_id,
-            # We don't know kind yet (the planner decides). Start as 'full'
-            # and the task below updates it once the plan resolves. The UI
-            # treats in-flight runs as unknown anyway.
-            kind="full",
+            kind="pending",
         )
         await repo.close()
     except Exception as db_err:

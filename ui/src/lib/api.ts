@@ -192,7 +192,10 @@ export interface ThreadTurnReport {
 export interface ThreadTurn {
   analysis_id: string;
   parent_analysis_id: string | null;
-  kind: "full" | "chat";
+  // ``pending`` = planner hasn't decided yet; becomes ``full`` or ``chat``
+  // once the planner resolves. The UI renders a lightweight loading state
+  // for pending turns so follow-ups don't flash the full pipeline view.
+  kind: "full" | "chat" | "pending";
   requirement: string;
   status: string;
   created_at: string | null;
