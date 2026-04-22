@@ -1,6 +1,21 @@
+"""OpenSearch index + bulk indexing helpers.
+
+The index mapping picks up three new fields for the declared model --
+``org_id``, ``team_id``, ``service_id`` -- so the retrieval layer can push
+scope filters down to OpenSearch instead of post-filtering in Python.
+
+The ``setup_index`` path is still idempotent: the mapping is created once per
+``(opensearch_url, index_name)`` tuple. Existing indexes created under the
+old mapping won't auto-upgrade; the setup script deletes and recreates on
+mapping change. That's fine for Phase 1 -- the plan explicitly wipes seed
+data as part of the migration -- but we log a clear warning if the mapping
+is missing the new fields.
+"""
+
 from __future__ import annotations
 
 from threading import Lock
+from uuid import UUID
 
 from opensearchpy import OpenSearch, helpers
 
@@ -64,6 +79,10 @@ INDEX_MAPPING = {
             "source_platform": {"type": "keyword"},
             "source_path": {"type": "keyword"},
             "source_url": {"type": "keyword"},
+            "source_id": {"type": "keyword"},
+            "org_id": {"type": "keyword"},
+            "team_id": {"type": "keyword"},
+            "service_id": {"type": "keyword"},
             "document_title": {"type": "text"},
             "section_heading": {"type": "text"},
             "team_hint": {"type": "keyword"},
@@ -108,6 +127,26 @@ def setup_index(client: OpenSearch | None = None) -> None:
         if not client.indices.exists(index=index_name):
             client.indices.create(index=index_name, body=INDEX_MAPPING)
             log.info("index_created", index=index_name)
+        else:
+            # Add the scope fields onto an existing index so the migration
+            # from the pre-Phase-1 mapping works without a full rebuild.
+            # OpenSearch accepts PUT mapping for *additive* field changes,
+            # which is all we need here.
+            try:
+                client.indices.put_mapping(
+                    index=index_name,
+                    body={
+                        "properties": {
+                            "source_id": {"type": "keyword"},
+                            "org_id": {"type": "keyword"},
+                            "team_id": {"type": "keyword"},
+                            "service_id": {"type": "keyword"},
+                        }
+                    },
+                )
+                log.info("index_mapping_upgraded", index=index_name)
+            except Exception as e:  # noqa: BLE001
+                log.warning("index_mapping_upgrade_failed", error=str(e)[:200])
 
         pipeline_name = "hybrid-search-pipeline"
         client.http.put(f"/_search/pipeline/{pipeline_name}", body=SEARCH_PIPELINE)
@@ -121,7 +160,13 @@ def setup_index(client: OpenSearch | None = None) -> None:
         _configured_indexes.add(config_key)
 
 
-def index_chunks(chunks: list[Chunk], client: OpenSearch | None = None) -> int:
+def _uuid_str(value: UUID | str | None) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def index_chunks(chunks: list[Chunk], client: OpenSearch | None = None, *, source_id: UUID | str | None = None) -> int:
     if not chunks:
         return 0
 
@@ -141,6 +186,10 @@ def index_chunks(chunks: list[Chunk], client: OpenSearch | None = None) -> int:
             "source_platform": chunk.metadata.source_platform,
             "source_path": chunk.metadata.source_path,
             "source_url": chunk.metadata.source_url,
+            "source_id": _uuid_str(source_id),
+            "org_id": _uuid_str(chunk.metadata.org_id),
+            "team_id": _uuid_str(chunk.metadata.team_id),
+            "service_id": _uuid_str(chunk.metadata.service_id),
             "document_title": chunk.metadata.document_title,
             "section_heading": chunk.metadata.section_heading,
             "team_hint": chunk.metadata.team_hint,
@@ -173,6 +222,25 @@ def delete_by_document_id(document_id: str, client: OpenSearch | None = None) ->
     )
     deleted = response.get("deleted", 0)
     log.info("chunks_deleted", document_id=document_id, count=deleted)
+    return deleted
+
+
+def delete_by_source_id(source_id: UUID | str, client: OpenSearch | None = None) -> int:
+    """Delete every chunk belonging to a declared source.
+
+    Called when a source is deleted from the catalog, and (optionally) when a
+    source is re-ingested with ``force=True``.
+    """
+    client = client or get_opensearch_client()
+    index_name = settings.opensearch_index
+
+    response = client.delete_by_query(
+        index=index_name,
+        body={"query": {"term": {"source_id": _uuid_str(source_id)}}},
+        refresh=True,
+    )
+    deleted = response.get("deleted", 0)
+    log.info("chunks_deleted_by_source", source_id=str(source_id), count=deleted)
     return deleted
 
 

@@ -2,41 +2,48 @@
 
 **Platform-aware Requirement Intelligence and Service Mapping**
 
-PRISM turns a product or platform requirement into a cross-team analysis brief grounded in your internal documentation. It also ships with a search experience, a retrieval-grounded chat assistant, a source catalog, analysis history, and PDF export for completed briefs.
+PRISM turns a product or platform requirement into a cross-team analysis
+brief grounded in your internal documentation. It uses a **declared**
+Org → Team → Service hierarchy so every retrieved document has known
+provenance — no regex-inferred ownership, no guessing from folder paths.
 
 ```mermaid
 graph TB
     subgraph UX["User Experience"]
-        SEARCH["Search<br/>Hybrid retrieval"]
+        SETUP["Setup<br/>Declare org · teams · services"]
+        SEARCH["Search<br/>Scope-aware hybrid retrieval"]
         CHAT["Chat<br/>Grounded answers"]
         ANALYZE["Analyze<br/>Multi-agent brief"]
+        SOURCES["Sources<br/>Attach · sync · inspect"]
         EXPORT["Export<br/>PDF brief"]
     end
 
     subgraph APP["Application Layer"]
         API["FastAPI API<br/>REST + SSE"]
+        CATAPI["Catalog API<br/>orgs · teams · services · sources"]
         ORC["LangGraph Orchestrator<br/>Analysis workflow"]
-        RET["Hybrid Retrieval<br/>BM25 + vector + rerank"]
+        RET["Hybrid Retrieval<br/>BM25 + vector + scope filter"]
     end
 
     subgraph DATA["Knowledge Stores"]
         OS[(OpenSearch)]
-        N4J[(Neo4j)]
-        PG[(PostgreSQL)]
+        PG[(PostgreSQL<br/>Catalog · Registry · History)]
     end
 
     subgraph AI["AI Runtime"]
-        OLLAMA["Ollama<br/>Qwen 2.5"]
+        OLLAMA["LLM Proxy<br/>OpenAI-compatible"]
     end
 
+    SETUP --> CATAPI
+    SOURCES --> CATAPI
     SEARCH --> API
     CHAT --> API
     ANALYZE --> API
     API --> RET
     API --> ORC
+    CATAPI --> PG
     ORC --> OLLAMA
     RET --> OS
-    ORC --> N4J
     ORC --> PG
     ANALYZE --> EXPORT
 
@@ -46,21 +53,26 @@ graph TB
     classDef data fill:#6366f1,color:#fff,stroke:none;
     classDef ai fill:#e11d48,color:#fff,stroke:none;
 
-    class SEARCH,CHAT,ANALYZE,EXPORT ux;
-    class API,RET app;
+    class SETUP,SEARCH,CHAT,ANALYZE,SOURCES,EXPORT ux;
+    class API,CATAPI,RET app;
     class ORC agent;
-    class OS,N4J,PG data;
+    class OS,PG data;
     class OLLAMA ai;
 ```
 
 ## What PRISM Does
 
-- Analyzes a structured requirement brief, not just a single sentence
+- Declares an explicit `Organization → Team → Service` hierarchy so document
+  provenance is never inferred
+- Attaches **sources** (GitLab projects or groups, etc.) at any of those
+  three scopes — documents ingested by a source inherit its scope
+- Analyzes a structured requirement brief (not just a one-liner)
 - Recommends a primary owning team and supporting teams
 - Identifies services in scope and related dependencies
 - Surfaces risks, effort, blockers, evidence quality, and unsupported claims
 - Streams live agent progress while the analysis is running
-- Lets users search the knowledge base with filters and pagination
+- Supports scope-aware search: filter by org/team/service without losing the
+  hybrid BM25 + vector retrieval pipeline
 - Supports grounded chat with source citations and chunk previews
 - Exports completed analyses as readable PDFs
 
@@ -68,11 +80,14 @@ graph TB
 
 | Surface | What it does |
 |---|---|
-| Dashboard | Health, recent analyses, teams, conflicts, quick entry points |
+| **Setup** | First-run wizard to declare the org, teams, services |
+| Dashboard | Health, recent analyses, declared teams, quick entry points |
 | Analyze | Structured requirement intake and live multi-agent analysis |
-| Search | Hybrid retrieval over the knowledge base with filters and pagination |
+| Search | Hybrid retrieval over the knowledge base with scope + filters |
 | Chat | Retrieval-grounded Q&A with source references and citation previews |
-| Sources | Connected source inventory and ingestion controls |
+| **Sources** | Declared-source inventory; per-source status, sync, docs |
+| **Sources → new** | 4-step wizard: scope → connector → config → test + save |
+| Org / Team / Service pages | Declared catalog pages; attach sources at any scope |
 | History | Past analysis runs with status and deletion |
 
 ## Quickstart
@@ -85,19 +100,47 @@ This single command:
 
 1. Installs backend dependencies with `uv`
 2. Installs frontend dependencies with `bun`
-3. Starts infrastructure with Docker Compose
-4. Configures OpenSearch and Neo4j
-5. Generates seed data on first run
-6. Ingests documents into OpenSearch and Neo4j
-7. Starts the API on `http://localhost:8000`
-8. Starts the UI on `http://localhost:5173`
+3. Starts infrastructure with Docker Compose (OpenSearch, PostgreSQL, Redis)
+4. Configures OpenSearch
+5. Starts the API on `http://localhost:8000`
+6. Starts the UI on `http://localhost:5173`
+
+On first boot, open [http://localhost:5173/setup](http://localhost:5173/setup)
+and declare your org, a team, and (optionally) your first service. Then
+attach a GitLab source to ingest real docs.
 
 ### Prerequisites
 
 - [uv](https://docs.astral.sh/uv/)
 - [bun](https://bun.sh/)
 - [Docker](https://www.docker.com/)
-- [Ollama](https://ollama.com/) for local LLM-backed features
+- An OpenAI-compatible LLM endpoint on `http://127.0.0.1:4000/v1`
+  (override with `PRISM_LLM_BASE_URL`)
+- A GitLab personal access token with `read_api` + `read_repository` scopes
+  for Phase 1 ingestion. Self-hosted GitLab? Set `PRISM_GITLAB_BASE_URL`.
+
+## Declarative Ownership Model
+
+```
+Organization
+ ├── Sources (scope = org)              ← visible to every team in the org
+ └── Teams
+      ├── Sources (scope = team)        ← visible only to this team's analyses
+      └── Services
+           └── Sources (scope = service) ← narrowest; the service's own docs/repo
+```
+
+Every ingested document carries denormalized `(org_id, team_id, service_id)`
+columns. Retrieval pushes a scope filter straight into OpenSearch:
+
+```sql
+WHERE org_id = Z
+  AND (team_id    IS NULL OR team_id    = X)
+  AND (service_id IS NULL OR service_id = Y)
+```
+
+Org chunks always match. Team chunks match only when their team is in
+scope. Service chunks match only their own service.
 
 ## Analysis Input
 
@@ -119,8 +162,10 @@ PRISM accepts a structured analysis brief:
 
 PRISM has two main runtime paths:
 
-- Analysis: FastAPI -> LangGraph orchestrator -> retrieval + specialist agents -> persisted report
-- Search and chat: FastAPI -> hybrid retrieval -> search results or grounded chat answer
+- **Analysis**: FastAPI → LangGraph orchestrator → retrieval (with scope
+  filter) + specialist agents → persisted report
+- **Search / chat**: FastAPI → hybrid retrieval → scope-filtered results
+  or grounded chat answer
 
 ```mermaid
 graph TB
@@ -130,6 +175,7 @@ graph TB
 
     subgraph API["API Layer"]
         FASTAPI["FastAPI Server<br/>REST · SSE"]
+        CATALOG["Catalog routes<br/>/api/orgs · teams · services · sources"]
     end
 
     subgraph ANALYSIS["Analysis Engine"]
@@ -138,22 +184,22 @@ graph TB
     end
 
     subgraph INFRA["Infrastructure"]
-        PG[(PostgreSQL 16<br/>History · Checkpoints)]
-        OS[(OpenSearch 2.17<br/>Chunks · Embeddings)]
-        N4J[(Neo4j 5.24<br/>Teams · Services · Dependencies)]
+        PG[(PostgreSQL 16<br/>Orgs · Teams · Services · Sources<br/>Documents · Dependencies · Registry · History)]
+        OS[(OpenSearch 2.17<br/>Chunks · Embeddings<br/>+ scope fields)]
     end
 
     subgraph AI["AI"]
-        OLLAMA["Ollama<br/>Qwen 2.5"]
+        OLLAMA["LLM Proxy<br/>OpenAI-compatible"]
     end
 
-    UI -->|Analyze · Search · Chat · Sources · History| FASTAPI
+    UI -->|Setup · Analyze · Search · Chat · Sources · History| FASTAPI
+    UI --> CATALOG
     FASTAPI --> ORC
     ORC --> PIPE
     FASTAPI --> OS
     FASTAPI --> PG
+    CATALOG --> PG
     PIPE --> OS
-    PIPE --> N4J
     PIPE --> PG
     PIPE --> OLLAMA
     FASTAPI --> OLLAMA
@@ -165,37 +211,39 @@ graph TB
     classDef ai fill:#f43f5e,color:#fff,stroke:none;
 
     class UI frontend;
-    class FASTAPI api;
+    class FASTAPI,CATALOG api;
     class ORC,PIPE worker;
-    class PG,OS,N4J infra;
+    class PG,OS infra;
     class OLLAMA ai;
 ```
 
-See [docs/architecture.md](docs/architecture.md) for detailed diagrams and runtime notes.
+See [docs/architecture.md](docs/architecture.md) for detailed diagrams and
+runtime notes.
 
 ## Documentation
 
 | Document | Description |
 |---|---|
-| [Architecture](docs/architecture.md) | Topology, runtime flows, data stores, product surfaces |
-| [Data Flow](docs/data-flow.md) | Ingestion, retrieval, entity extraction, search/chat flow |
+| [Architecture](docs/architecture.md) | Topology, declared catalog, runtime flows, data stores |
+| [Data Flow](docs/data-flow.md) | Declared sources, ingestion, retrieval, scope filtering |
 | [Agents](docs/agents.md) | Agent responsibilities, orchestration, state, degradation |
-| [API Reference](docs/api.md) | Analysis, search, graph, sources, history, chat endpoints |
-| [Deployment](docs/deployment.md) | Docker Compose setup, ports, env vars, migration notes |
+| [API Reference](docs/api.md) | Analysis, search, catalog, sources, chat endpoints |
+| [Deployment](docs/deployment.md) | Docker Compose setup, ports, env vars |
 | [Development](docs/development.md) | Local setup, tests, project structure, extension points |
+| [plan.md](plan.md) | Design rationale for the declarative ownership model |
 
 ## Tech Stack
 
 | Layer | Technology |
 |---|---|
-| LLM | Qwen 2.5 7B via Ollama |
-| Search | OpenSearch 2.17 hybrid retrieval |
-| Knowledge Graph | Neo4j 5.24 |
+| LLM | Configurable via OpenAI-compatible proxy (default `gpt-5-mini`) |
+| Search | OpenSearch 2.17 hybrid retrieval with scope field pushdown |
+| Knowledge Store | PostgreSQL relational tables (declared catalog + `kg_*` + registry) |
 | Persistence | PostgreSQL 16 |
 | Agent Framework | LangGraph with PostgreSQL checkpointing |
 | Embeddings | `sentence-transformers/all-MiniLM-L6-v2` |
 | Re-ranking | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
-| Backend | FastAPI + Python 3.12 |
+| Backend | FastAPI + Python 3.12 (asyncpg, httpx) |
 | Frontend | React 18.3 + TypeScript + Tailwind CSS + TanStack Router |
 | Export | jsPDF + jspdf-autotable |
 
@@ -205,26 +253,40 @@ See [docs/architecture.md](docs/architecture.md) for detailed diagrams and runti
 prism/
 ├── run.sh
 ├── docker-compose.yml
+├── plan.md                       # design rationale for declarative ownership
 ├── backend/
 │   ├── src/
 │   │   ├── agents/
 │   │   ├── api/
-│   │   ├── connectors/
+│   │   │   ├── routes.py         # analysis, search, chat, graph
+│   │   │   └── catalog_routes.py # orgs / teams / services / sources CRUD
+│   │   ├── catalog/              # declared-catalog schema + repos
+│   │   ├── connectors/           # gitlab (API) + sharepoint/excel/onenote (local)
 │   │   ├── ingestion/
 │   │   ├── models/
 │   │   ├── retrieval/
 │   │   ├── db.py
-│   │   └── ollama_client.py
+│   │   └── llm_client.py
 │   └── tests/
 ├── ui/
 │   └── src/
 │       ├── components/
 │       ├── hooks/
-│       ├── lib/
+│       │   └── useCatalog.ts     # org / team / service / source hooks
+│       ├── lib/api.ts            # typed API client
 │       ├── routes/
+│       │   ├── setup.tsx         # first-run wizard
+│       │   ├── orgs.$orgId.tsx
+│       │   ├── teams.$teamId.tsx
+│       │   ├── services.$serviceId.tsx
+│       │   ├── sources.tsx
+│       │   ├── sources.new.tsx   # 4-step source wizard
+│       │   └── sources.$sourceId.tsx
 │       └── stores/
 ├── scripts/
-├── data/
+│   ├── ingest.py                 # CLI: ingest a declared source
+│   └── setup_opensearch.py
+├── data/                         # empty by default; path-based connectors opt-in
 └── docs/
 ```
 
@@ -232,8 +294,22 @@ prism/
 
 Current local verification targets:
 
-- Backend test suite: `45` tests
+- Backend test suite: **50 tests** (5 additional Postgres-gated tests skipped
+  without `PRISM_POSTGRES_URL`)
 - Frontend build: `tsc -b && vite build`
+
+Run the backend suite:
+
+```bash
+cd backend && uv run pytest
+```
+
+Run the catalog / API tests against a local PostgreSQL:
+
+```bash
+PRISM_POSTGRES_URL=postgresql://prism:prismpass@localhost:5432/prism \
+  uv run pytest
+```
 
 ## License
 

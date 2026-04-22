@@ -1,9 +1,15 @@
+"""File-based Excel connector (Phase 1 stub).
+
+Reads ``.xlsx``/``.xls``/``.csv`` files under a path declared in the source
+config. The plan's Phase 2 pulls these from SharePoint / OneDrive via Graph.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
 
-from src.connectors.base import Connector, ConnectorRegistry
+from src.connectors.base import Connector, ConnectorRegistry, SourceConfig, resolve_local_path
 from src.models.document import DocumentMetadata, DocumentRef, RawDocument
 
 EXCEL_EXTENSIONS = {".xlsx", ".xls", ".csv"}
@@ -11,6 +17,10 @@ EXCEL_EXTENSIONS = {".xlsx", ".xls", ".csv"}
 
 class ExcelConnector(Connector):
     platform = "excel"
+
+    def __init__(self, source: SourceConfig) -> None:
+        super().__init__(source)
+        self.base_dir: Path = resolve_local_path(source)
 
     def list_documents(self) -> list[DocumentRef]:
         refs = []

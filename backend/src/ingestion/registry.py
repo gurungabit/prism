@@ -1,8 +1,21 @@
+"""Per-document idempotency + content-hash tracking.
+
+Each declared source feeds documents through the registry. The registry keys
+on ``source_path`` (so re-ingesting the same path updates in place) and stores
+the content hash so unchanged documents can be skipped. ``source_id`` ties
+each row back to the declared source, so deleting a source cascades-deletes
+its registry entries.
+
+Schema lives in ``src.catalog.schema.REGISTRY_SCHEMA_SQL`` and is created by
+``CatalogRepo._init_schema``. The helper here reuses that bootstrap so
+``DocumentRegistry.create()`` remains a one-call initializer.
+"""
+
 from __future__ import annotations
 
 import asyncio
 import hashlib
-from datetime import datetime
+from uuid import UUID
 
 import asyncpg
 
@@ -11,21 +24,6 @@ from src.db import get_postgres_pool
 from src.observability.logging import get_logger
 
 log = get_logger("registry")
-
-CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS document_registry (
-    document_id TEXT PRIMARY KEY,
-    source_platform TEXT NOT NULL,
-    source_path TEXT NOT NULL UNIQUE,
-    content_hash TEXT NOT NULL,
-    last_ingested_at TIMESTAMPTZ DEFAULT NOW(),
-    chunk_count INTEGER DEFAULT 0,
-    status TEXT DEFAULT 'pending'
-);
-
-CREATE INDEX IF NOT EXISTS idx_registry_source_path ON document_registry(source_path);
-CREATE INDEX IF NOT EXISTS idx_registry_status ON document_registry(status);
-"""
 
 
 class DocumentRegistry:
@@ -49,10 +47,10 @@ class DocumentRegistry:
         owns_pool = dsn != settings.postgres_url
         pool = await get_postgres_pool(dsn)
         registry = cls(pool, owns_pool=owns_pool, dsn=dsn)
-        await registry._init_schema()
+        await registry._ensure_catalog_schema()
         return registry
 
-    async def _init_schema(self) -> None:
+    async def _ensure_catalog_schema(self) -> None:
         if self.dsn in self._initialized_dsns:
             return
 
@@ -60,11 +58,13 @@ class DocumentRegistry:
             if self.dsn in self._initialized_dsns:
                 return
 
-            async with self.pool.acquire() as conn:
-                await conn.execute(CREATE_TABLE_SQL)
+            from src.catalog.base_repo import CatalogRepo  # noqa: WPS433
+
+            repo = CatalogRepo(self.pool, owns_pool=False, dsn=self.dsn)
+            await repo._init_schema()
 
             self._initialized_dsns.add(self.dsn)
-            log.info("registry_schema_initialized")
+            log.info("registry_catalog_ready")
 
     async def get_by_path(self, source_path: str) -> dict | None:
         async with self.pool.acquire() as conn:
@@ -82,18 +82,24 @@ class DocumentRegistry:
         content_hash: str,
         chunk_count: int,
         status: str = "indexed",
+        *,
+        source_id: UUID | None = None,
     ) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO document_registry (document_id, source_platform, source_path, content_hash, chunk_count, status, last_ingested_at)
-                VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                INSERT INTO document_registry (
+                    document_id, source_platform, source_path,
+                    content_hash, chunk_count, status, last_ingested_at, source_id
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
                 ON CONFLICT (source_path) DO UPDATE SET
                     document_id = $1,
                     content_hash = $4,
                     chunk_count = $5,
                     status = $6,
-                    last_ingested_at = NOW()
+                    last_ingested_at = NOW(),
+                    source_id = $7
                 """,
                 document_id,
                 source_platform,
@@ -101,6 +107,7 @@ class DocumentRegistry:
                 content_hash,
                 chunk_count,
                 status,
+                source_id,
             )
 
     async def mark_status(self, source_path: str, status: str) -> None:
@@ -113,7 +120,21 @@ class DocumentRegistry:
 
     async def get_all(self) -> list[dict]:
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch("SELECT * FROM document_registry ORDER BY last_ingested_at DESC")
+            rows = await conn.fetch(
+                "SELECT * FROM document_registry ORDER BY last_ingested_at DESC"
+            )
+            return [dict(r) for r in rows]
+
+    async def get_for_source(self, source_id: UUID) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM document_registry
+                WHERE source_id = $1
+                ORDER BY last_ingested_at DESC
+                """,
+                source_id,
+            )
             return [dict(r) for r in rows]
 
     async def close(self) -> None:

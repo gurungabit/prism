@@ -8,15 +8,20 @@ class Settings(BaseSettings):
     opensearch_url: str = "http://localhost:9200"
     opensearch_index: str = "prism-chunks"
 
-    neo4j_uri: str = "bolt://localhost:7687"
-    neo4j_user: str = "neo4j"
-    neo4j_password: str = "prismgraph"
-
     postgres_url: str = "postgresql://prism:prismpass@localhost:5432/prism"
 
     redis_url: str = "redis://localhost:6379"
 
     data_dir: str = "./data"
+
+    # GitLab connector defaults. Overridable per-source via ``config.base_url``.
+    # Self-hosted instances set PRISM_GITLAB_BASE_URL at deploy time.
+    gitlab_base_url: str = "https://gitlab.com/api/v4"
+    gitlab_request_timeout_seconds: float = 30.0
+    # Hard cap on docs fetched per source per ingest run. Prevents a run-away
+    # group with thousands of projects from swamping the pipeline in Phase 1.
+    gitlab_max_projects_per_source: int = 200
+    gitlab_max_docs_per_project: int = 50
 
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_dimension: int = 384
@@ -40,12 +45,13 @@ class Settings(BaseSettings):
     dedup_threshold: float = 0.8
     dedup_num_perm: int = 128
 
-    ollama_host: str = "http://localhost:11434"
+    llm_base_url: str = "http://127.0.0.1:4000/v1"
+    llm_api_key: str = "local-dev"
 
-    model_router: str = "qwen2.5:7b"
-    model_risk: str = "qwen2.5:7b"
-    model_synthesis: str = "qwen2.5:7b"
-    model_bulk: str = "qwen2.5:7b"
+    model_router: str = "gpt-5-mini"
+    model_risk: str = "gpt-5-mini"
+    model_synthesis: str = "gpt-5-mini"
+    model_bulk: str = "raptor-mini"
 
 
 settings = Settings()

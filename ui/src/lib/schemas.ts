@@ -16,6 +16,7 @@ export const AnalysisInputSchema = z.object({
 
 export const CitationSchema = z.object({
   document_path: z.string(),
+  source_url: z.string().default(""),
   excerpt: z.string().default(""),
   last_modified: z.string().default(""),
   relevance_score: z.number().default(0),
@@ -25,6 +26,7 @@ export const SourceDocumentSchema = z.object({
   id: z.string(),
   path: z.string(),
   platform: z.string(),
+  source_url: z.string().default(""),
   relevance_score: z.number().default(0),
   last_modified: z.string().default(""),
   is_stale: z.boolean().default(false),

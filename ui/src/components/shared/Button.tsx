@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 
-type ButtonVariant = "primary" | "secondary" | "ghost" | "accent";
+type ButtonVariant = "primary" | "secondary" | "ghost" | "accent" | "danger";
 type ButtonSize = "sm" | "md" | "lg";
 
 const variantClasses: Record<ButtonVariant, string> = {
@@ -13,6 +13,8 @@ const variantClasses: Record<ButtonVariant, string> = {
     "text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700/30",
   accent:
     "bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] dark:bg-[var(--color-accent-dark)] dark:text-zinc-900 dark:hover:bg-[var(--color-accent-dark-hover)]",
+  danger:
+    "bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-600 dark:hover:bg-rose-500",
 };
 
 const sizeClasses: Record<ButtonSize, string> = {

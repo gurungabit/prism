@@ -45,37 +45,6 @@ GET /api/analyze/{analysis_id}/stream
 
 Server-Sent Events stream. Supports `Last-Event-ID` for reconnection.
 
-Typical events:
-
-```json
-{
-  "type": "agent_step",
-  "id": "a1b2c3d4-000003",
-  "agent": "router",
-  "action": "reasoning",
-  "detail": "AI is analyzing...",
-  "timestamp": 1712100000.0
-}
-```
-
-```json
-{
-  "type": "complete",
-  "id": "a1b2c3d4-000042",
-  "report": { "...PRISMReport..." },
-  "timestamp": 1712100045.0
-}
-```
-
-```json
-{
-  "type": "error",
-  "id": "a1b2c3d4-000010",
-  "error": "Analysis failed: ...",
-  "timestamp": 1712100010.0
-}
-```
-
 ### Get Report
 
 ```http
@@ -95,15 +64,11 @@ Responses:
 GET /api/analyze/{analysis_id}/trace
 ```
 
-Returns the stored event stream for the run.
-
 ### Get Sources For Analysis
 
 ```http
 GET /api/analyze/{analysis_id}/sources
 ```
-
-Returns source documents referenced by the completed report.
 
 ### Submit Feedback
 
@@ -111,17 +76,9 @@ Returns source documents referenced by the completed report.
 POST /api/analyze/{analysis_id}/feedback
 ```
 
-```json
-{
-  "section": "team_routing",
-  "correct_answer": "Security Team",
-  "reason": "Recent reorg moved auth-service ownership"
-}
-```
-
 ## Search
 
-### Manual Search
+### Manual Search (scope-aware)
 
 ```http
 POST /api/search
@@ -138,6 +95,11 @@ Request body:
     "team_hint": ["Platform Team"],
     "service_hint": ["auth-service"]
   },
+  "scope": {
+    "org_id": "11111111-1111-1111-1111-111111111111",
+    "team_ids": ["22222222-2222-2222-2222-222222222222"],
+    "service_ids": ["33333333-3333-3333-3333-333333333333"]
+  },
   "page": 1,
   "page_size": 40
 }
@@ -145,9 +107,11 @@ Request body:
 
 Notes:
 
-- `page_size` defaults to `40`
-- `top_k` is also accepted and is treated as the requested page size
-- filters are passed through to retrieval; values may be single strings or arrays
+- `scope` is optional. If present it pushes down to OpenSearch. Org-scoped
+  chunks always match; team/service chunks match only when in scope (or when
+  they carry NULL for that level).
+- `filters` are the regular text/keyword field filters (platform, doc type,
+  legacy team/service hints).
 
 Response:
 
@@ -159,10 +123,13 @@ Response:
       "chunk_id": "chunk-123",
       "content": "Auth service handles login and MFA challenges...",
       "score": 0.941,
-      "source_path": "platform-team/auth-service/wiki/architecture.md",
+      "source_path": "platform-team/auth-service@main:docs/architecture.md",
       "document_title": "Auth Service Architecture",
       "doc_type": "wiki",
-      "platform": "gitlab"
+      "platform": "gitlab",
+      "org_id": "11111111-1111-1111-1111-111111111111",
+      "team_id": "22222222-2222-2222-2222-222222222222",
+      "service_id": "33333333-3333-3333-3333-333333333333"
     }
   ],
   "page": 1,
@@ -180,139 +147,169 @@ Response:
 POST /api/chat
 ```
 
-Request body:
-
-```json
-{
-  "message": "What teams own the checkout service?",
-  "conversation_id": "optional-existing-id"
-}
-```
-
-Response is an SSE stream with events:
-
-- `metadata`: conversation id and retrieved citations
-- `token`: streamed answer text
-- `done`: terminal event for the message
-
-Example metadata payload:
-
-```json
-{
-  "conversation_id": "conv-123",
-  "citations": [
-    {
-      "index": 1,
-      "source_path": "payments-team/team-charter.md",
-      "source_url": "",
-      "platform": "sharepoint",
-      "title": "Team Charter",
-      "section_heading": "",
-      "score": 0.83,
-      "content": "The Payments Team is responsible for...",
-      "excerpt": "The Payments Team is responsible for..."
-    }
-  ]
-}
-```
-
-Notes:
-
-- Chat is retrieval-grounded and currently uses in-memory conversation storage
-- Conversations do not survive API restarts
-
-### List Conversations
+### List / Get / Delete Conversation
 
 ```http
-GET /api/chat/conversations
-```
-
-### Get Conversation
-
-```http
-GET /api/chat/{conversation_id}
-```
-
-### Delete Conversation
-
-```http
+GET    /api/chat/conversations
+GET    /api/chat/{conversation_id}
 DELETE /api/chat/{conversation_id}
 ```
 
-### Get Source Preview For Chat Citation
+### Source Preview
 
 ```http
-GET /api/chat/source-preview/by-path?source_path=payments-team/team-charter.md&source_platform=sharepoint
+GET /api/chat/source-preview/by-path?source_path=...&source_platform=gitlab
 ```
 
-Returns the earliest matching chunk for a cited document so the UI can show a chunk preview popup for chat citations.
+## Catalog (declarative ownership model)
+
+### Organizations
+
+```http
+POST   /api/orgs                              { "name": "Acme" }
+GET    /api/orgs
+GET    /api/orgs/{org_id}
+PATCH  /api/orgs/{org_id}                     { "name": "Acme Engineering" }
+DELETE /api/orgs/{org_id}
+```
+
+### Teams
+
+```http
+POST   /api/orgs/{org_id}/teams               { "name": "Platform", "description": "..." }
+GET    /api/orgs/{org_id}/teams
+GET    /api/teams/{team_id}
+PATCH  /api/teams/{team_id}                   { "name": "...", "description": "..." }
+DELETE /api/teams/{team_id}
+```
+
+### Services
+
+```http
+POST   /api/teams/{team_id}/services          { "name": "auth-service", "repo_url": "...", "description": "..." }
+GET    /api/teams/{team_id}/services
+GET    /api/services/{service_id}
+PATCH  /api/services/{service_id}
+DELETE /api/services/{service_id}
+```
+
+Creating a service may reconcile parked dependency edges (edges that
+referenced this name before the service was declared).
 
 ## Sources
 
-### List Ingested Sources
+### List / Get
 
 ```http
-GET /api/sources
+GET    /api/sources?org_id=&team_id=&service_id=
+GET    /api/sources/{source_id}
+GET    /api/sources/{source_id}/status
 ```
 
-Response groups documents by platform and includes:
+Response shape (list):
 
-- `platform`
-- `document_count`
-- `last_ingested`
-- `documents[]`
+```json
+{
+  "sources": [
+    {
+      "id": "uuid",
+      "org_id": null,
+      "team_id": "uuid",
+      "service_id": null,
+      "kind": "gitlab",
+      "name": "Platform Team GitLab",
+      "config": { "group_path": "platform-team" },
+      "status": "ready",
+      "last_ingested_at": "2026-04-20T12:00:00Z",
+      "document_count": 87,
+      "created_at": "..."
+    }
+  ],
+  "total": 1
+}
+```
 
-Each document entry includes:
-
-- `document_id`
-- `source_path`
-- `chunk_count`
-- `status`
-- `last_ingested_at`
-
-## History
-
-### List Analysis History
+### Create
 
 ```http
-GET /api/history?limit=20&offset=0
+POST /api/sources
 ```
 
-### Delete Analysis History Entry
+```json
+{
+  "scope": "team",
+  "scope_id": "22222222-2222-2222-2222-222222222222",
+  "kind": "gitlab",
+  "name": "Platform Team GitLab",
+  "config": { "group_path": "platform-team", "include_subgroups": true },
+  "token": "glpat-..."
+}
+```
+
+`scope` is `org` | `team` | `service`. The source row enforces exactly one
+scope via a CHECK constraint.
+
+For the GitLab connector, `config` is one of:
+
+```json
+{ "kind": "gitlab", "group_path": "platform-team", "include_subgroups": true }
+```
+
+```json
+{ "kind": "gitlab", "project_path": "platform-team/api-gateway", "ref": "main" }
+```
+
+Optional: `base_url` overrides the default GitLab API endpoint (for
+self-hosted instances). Global default comes from
+`PRISM_GITLAB_BASE_URL`.
+
+### Update / Delete
 
 ```http
-DELETE /api/history/{analysis_id}
+PATCH  /api/sources/{source_id}               { "name": "...", "config": { ... }, "token": "..." }
+DELETE /api/sources/{source_id}
 ```
 
-## Ingestion
+Passing `"token": ""` in an update *clears* the stored secret. Omitting
+`token` leaves it unchanged.
 
-### Trigger Incremental Ingestion
+Deleting a source cascades to `kg_documents`, `document_registry`,
+`source_secrets`, and (best-effort) OpenSearch chunks tagged with that
+source.
+
+### Ingest
 
 ```http
-POST /api/ingest
-POST /api/ingest?force=true
+POST /api/sources/{source_id}/ingest
+POST /api/sources/{source_id}/ingest?force=true
 ```
 
-### Ingest One Platform
+Returns `{ "status": "started", "source_id": "...", "force": false }`
+immediately; ingestion runs as a background task. Poll
+`/api/sources/{id}/status` for progress.
+
+`force=true` wipes the source's existing chunks and re-ingests every
+document (ignoring content-hash caching).
+
+### Validate (test connection)
 
 ```http
-POST /api/ingest/{platform}
+POST /api/sources/validate
 ```
 
-Supported platforms in the seed dataset:
-
-- `gitlab`
-- `sharepoint`
-- `excel`
-- `onenote`
-
-### Force Full Re-index
-
-```http
-POST /api/ingest/full
+```json
+{
+  "kind": "gitlab",
+  "config": { "project_path": "platform-team/api-gateway" },
+  "token": "glpat-..."
+}
 ```
 
-## Knowledge Graph
+Used by the "Test connection" button in the source wizard. For GitLab it
+hits `/projects/:path` and returns the resolved project(s). For path-based
+connectors it checks the local path exists.
+
+## Knowledge Graph (catalog-backed)
 
 ### List Teams
 
@@ -320,30 +317,30 @@ POST /api/ingest/full
 GET /api/graph/teams
 ```
 
-### Get Team Profile
+Returns declared teams with owned service names. Always backed by the
+catalog now — no more inference.
+
+### Get Team Profile / Service / Dependencies
 
 ```http
 GET /api/graph/teams/{team_name}
-```
-
-### Get Service Info
-
-```http
 GET /api/graph/services/{service_name}
-```
-
-Returns the service, current owners, and dependencies.
-
-### Get Service Dependencies
-
-```http
 GET /api/graph/dependencies/{service_name}?depth=2
 ```
 
-### List Ownership Conflicts
+**Removed**: `GET /api/graph/conflicts`. Under the declared model a service
+belongs to exactly one team, so ownership conflicts are not possible at
+the data layer (see plan open question 4).
+
+**Removed**: `POST /api/ingest`, `POST /api/ingest/{platform}`,
+`POST /api/ingest/full`. These legacy endpoints assumed the seed-data
+layout; use `POST /api/sources/{id}/ingest` instead.
+
+## History
 
 ```http
-GET /api/graph/conflicts
+GET    /api/history?limit=20&offset=0
+DELETE /api/history/{analysis_id}
 ```
 
 ## Health
@@ -353,30 +350,20 @@ GET /api/health
 ```
 
 ```json
-{
-  "status": "healthy",
-  "service": "prism-api"
-}
+{ "status": "healthy", "service": "prism-api" }
 ```
 
 ## Report Shape
 
-Completed analyses return a `PRISMReport`. Important top-level fields include:
+Completed analyses return a `PRISMReport`. Important top-level fields
+include:
 
 ```json
 {
   "analysis_id": "uuid",
   "requirement": "Add MFA to customer portal",
-  "analysis_input": {
-    "requirement": "Add MFA to customer portal",
-    "business_goal": "",
-    "context": "",
-    "constraints": "",
-    "known_teams": "",
-    "known_services": "",
-    "questions_to_answer": ""
-  },
-  "created_at": "2026-04-08T18:30:00Z",
+  "analysis_input": { "...": "..." },
+  "created_at": "2026-04-20T18:30:00Z",
   "duration_seconds": 45.2,
   "executive_summary": "...",
   "recommendations": ["..."],
@@ -408,4 +395,5 @@ Completed analyses return a `PRISMReport`. Important top-level fields include:
 UI terminology note:
 
 - `affected_services` is rendered as **Services In Scope**
-- dependency lists are rendered as **Blocking**, **Non-Blocking**, and **Contextual** dependencies in the UI
+- dependency lists are rendered as **Blocking**, **Non-Blocking**, and
+  **Contextual** dependencies in the UI

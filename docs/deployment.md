@@ -9,7 +9,6 @@ graph TB
     subgraph COMPOSE["docker-compose.yml"]
         OS[(OpenSearch<br/>:9200)]
         OSD["OpenSearch Dashboards<br/>:5601"]
-        N4J[(Neo4j<br/>:7474 / :7687)]
         PG[(PostgreSQL<br/>:5432)]
         RD[(Redis<br/>:6379)]
         API["API Container<br/>:8000"]
@@ -18,7 +17,6 @@ graph TB
 
     OSD --> OS
     API --> OS
-    API --> N4J
     API --> PG
     API --> RD
     WEB --> API
@@ -28,7 +26,7 @@ graph TB
     classDef aux fill:#64748b,color:#fff,stroke:none;
 
     class API,WEB app;
-    class OS,N4J,PG,RD infra;
+    class OS,PG,RD infra;
     class OSD aux;
 ```
 
@@ -47,11 +45,9 @@ When using `./run.sh`, the effective developer-facing ports are:
 | API | `8000` |
 | OpenSearch | `9200` |
 | OpenSearch Dashboards | `5601` |
-| Neo4j Browser | `7474` |
-| Neo4j Bolt | `7687` |
 | PostgreSQL | `5432` |
 | Redis | `6379` |
-| Ollama | `11434` |
+| LLM proxy | `4000` |
 
 ## Service Configuration
 
@@ -59,8 +55,7 @@ When using `./run.sh`, the effective developer-facing ports are:
 |---|---|---|
 | OpenSearch | `opensearchproject/opensearch:2.17.0` | single node, security disabled, kNN enabled |
 | OpenSearch Dashboards | `opensearchproject/opensearch-dashboards:2.17.0` | local inspection only |
-| Neo4j | `neo4j:5.24-community` | APOC enabled |
-| PostgreSQL | `postgres:16-alpine` | document registry + analysis persistence |
+| PostgreSQL | `postgres:16-alpine` | document registry, analysis persistence, relational knowledge store (`kg_*` tables) |
 | Redis | `redis:7-alpine` | auxiliary local service |
 | API | FastAPI / Uvicorn | port `8000` |
 | UI | Vite in dev, containerized web app in compose | `5173` in dev, `3000` in compose |
@@ -70,8 +65,7 @@ When using `./run.sh`, the effective developer-facing ports are:
 | Volume | Purpose |
 |---|---|
 | `opensearch-data` | persistent search index data |
-| `neo4j-data` | graph persistence |
-| `postgres-data` | analysis history, registry, checkpoints |
+| `postgres-data` | analysis history, registry, knowledge store, checkpoints |
 
 ## Environment Variables
 
@@ -80,12 +74,13 @@ Backend settings use the `PRISM_` prefix.
 | Variable | Default | Description |
 |---|---|---|
 | `PRISM_OPENSEARCH_URL` | `http://localhost:9200` | OpenSearch endpoint |
-| `PRISM_NEO4J_URI` | `bolt://localhost:7687` | Neo4j endpoint |
-| `PRISM_NEO4J_USER` | `neo4j` | Neo4j username |
-| `PRISM_NEO4J_PASSWORD` | `prismgraph` | Neo4j password |
 | `PRISM_POSTGRES_URL` | `postgresql://prism:prismpass@localhost:5432/prism` | PostgreSQL DSN |
 | `PRISM_REDIS_URL` | `redis://localhost:6379` | Redis endpoint |
-| `PRISM_DATA_DIR` | `./data` | data root |
+| `PRISM_DATA_DIR` | `./data` | data root (only used by path-based connectors) |
+| `PRISM_GITLAB_BASE_URL` | `https://gitlab.com/api/v4` | GitLab API endpoint; override for self-hosted |
+| `PRISM_GITLAB_REQUEST_TIMEOUT_SECONDS` | `30.0` | per-request timeout for the GitLab connector |
+| `PRISM_GITLAB_MAX_PROJECTS_PER_SOURCE` | `200` | safety cap on group-scoped sources |
+| `PRISM_GITLAB_MAX_DOCS_PER_PROJECT` | `50` | safety cap per project |
 | `PRISM_EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | embedding model |
 | `PRISM_EMBEDDING_DIMENSION` | `384` | vector dimension |
 | `PRISM_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | reranker |
@@ -94,21 +89,20 @@ Backend settings use the `PRISM_` prefix.
 | `PRISM_RERANK_TOP_K` | `15` | post-rerank chunk count |
 | `PRISM_MAX_RETRIEVAL_ROUNDS` | `2` | max coverage retries |
 | `PRISM_STALENESS_THRESHOLD_DAYS` | `365` | stale source threshold |
-| `PRISM_MODEL_ROUTER` | `qwen2.5:7b` | routing model |
-| `PRISM_MODEL_RISK` | `qwen2.5:7b` | risk model |
-| `PRISM_MODEL_SYNTHESIS` | `qwen2.5:7b` | synthesis model |
-| `PRISM_MODEL_BULK` | `qwen2.5:7b` | general analysis model |
+| `PRISM_LLM_BASE_URL` | `http://127.0.0.1:4000/v1` | OpenAI-compatible LLM endpoint |
+| `PRISM_LLM_API_KEY` | `local-dev` | API key sent to the proxy |
+| `PRISM_MODEL_ROUTER` | `gpt-5-mini` | routing model |
+| `PRISM_MODEL_RISK` | `gpt-5-mini` | risk model |
+| `PRISM_MODEL_SYNTHESIS` | `gpt-5-mini` | synthesis model |
+| `PRISM_MODEL_BULK` | `raptor-mini` | general analysis model |
 
-## Ollama
+## LLM Proxy
 
-PRISM expects a local Ollama runtime for LLM-backed features.
+PRISM talks to any OpenAI-compatible endpoint via `PRISM_LLM_BASE_URL`. The default is a local proxy listening on `http://127.0.0.1:4000/v1` that handles upstream auth and serves aliases such as `gpt-5-mini`, `raptor-mini`, `claude-opus-4.6-fast`, `gemini-2.5-pro`, and `minimax-2.5`.
 
-```bash
-ollama serve
-ollama pull qwen2.5:7b
-```
+Start the proxy before running PRISM. Any OpenAI-compatible server works — swap the base URL, API key, and model aliases via the `PRISM_*` env vars above.
 
-If Ollama is unavailable, PRISM still runs but degrades:
+If the proxy is unreachable, PRISM still runs but degrades:
 
 - entity extraction falls back to deterministic patterns
 - query expansion simplifies
@@ -120,7 +114,6 @@ If Ollama is unavailable, PRISM still runs but degrades:
 Compose health checks are defined for:
 
 - OpenSearch
-- Neo4j
 - PostgreSQL
 - Redis
 
@@ -131,9 +124,8 @@ Compose health checks are defined for:
 | Local component | AWS equivalent |
 |---|---|
 | OpenSearch container | Amazon OpenSearch Service |
-| Neo4j container | Neo4j on EC2 or Amazon Neptune |
 | PostgreSQL container | Amazon RDS PostgreSQL |
 | Redis container | Amazon ElastiCache |
 | API process/container | ECS Fargate or EC2 |
 | UI static assets | S3 + CloudFront |
-| Ollama local runtime | GPU-backed inference service |
+| Local LLM proxy | Managed OpenAI-compatible endpoint (Bedrock, Azure OpenAI, vLLM, etc.) |

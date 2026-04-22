@@ -1,6 +1,7 @@
 import { RouterProvider } from "@tanstack/react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { router } from "./router";
+import { ConfirmProvider } from "./components/shared/ConfirmDialog";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -16,7 +17,9 @@ const queryClient = new QueryClient({
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <ConfirmProvider>
+        <RouterProvider router={router} />
+      </ConfirmProvider>
     </QueryClientProvider>
   );
 }

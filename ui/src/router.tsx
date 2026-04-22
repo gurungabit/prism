@@ -20,6 +20,21 @@ const ChatConversationPage = lazyRouteComponent(
   "ChatConversationPage",
 );
 const HistoryPage = lazyRouteComponent(() => import("./routes/history"), "HistoryPage");
+const OrgDetailPage = lazyRouteComponent(() => import("./routes/orgs.$orgId"), "OrgDetailPage");
+const TeamDetailPage = lazyRouteComponent(() => import("./routes/teams.$teamId"), "TeamDetailPage");
+const ServiceDetailPage = lazyRouteComponent(
+  () => import("./routes/services.$serviceId"),
+  "ServiceDetailPage",
+);
+const SourceDetailPage = lazyRouteComponent(
+  () => import("./routes/sources.$sourceId"),
+  "SourceDetailPage",
+);
+const NewSourcePage = lazyRouteComponent(() => import("./routes/sources.new"), "NewSourcePage");
+const OrganizationPage = lazyRouteComponent(
+  () => import("./routes/organization"),
+  "OrganizationPage",
+);
 
 const rootRoute = createRootRoute({
   component: RootLayout,
@@ -41,6 +56,11 @@ const searchRouteDefaultValues = {
   services: [] as string[],
 };
 
+const newSourceSearchSchema = z.object({
+  scope: z.enum(["org", "team", "service"]).optional(),
+  scopeId: z.string().optional(),
+});
+
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
@@ -51,6 +71,37 @@ const sourcesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/sources",
   component: SourcesPage,
+});
+
+const newSourceRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/sources/new",
+  validateSearch: (search: SearchSchemaInput) => newSourceSearchSchema.parse(search),
+  component: NewSourcePage,
+});
+
+const sourceDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/sources/$sourceId",
+  component: SourceDetailPage,
+});
+
+const orgDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/orgs/$orgId",
+  component: OrgDetailPage,
+});
+
+const teamDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/teams/$teamId",
+  component: TeamDetailPage,
+});
+
+const serviceDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/services/$serviceId",
+  component: ServiceDetailPage,
 });
 
 const searchRoute = createRoute({
@@ -93,8 +144,21 @@ const historyRoute = createRoute({
   component: HistoryPage,
 });
 
+const organizationRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/organization",
+  component: OrganizationPage,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
+  orgDetailRoute,
+  teamDetailRoute,
+  serviceDetailRoute,
+  // /sources/new must come before /sources/$sourceId in the route tree so
+  // TanStack matches the literal segment first.
+  newSourceRoute,
+  sourceDetailRoute,
   sourcesRoute,
   searchRoute,
   analyzeRoute,
@@ -102,6 +166,7 @@ const routeTree = rootRoute.addChildren([
   chatRoute,
   chatConversationRoute,
   historyRoute,
+  organizationRoute,
 ]);
 
 export const router = createRouter({

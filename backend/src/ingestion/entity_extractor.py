@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from src.config import settings
 from src.ingestion.team_names import canonicalize_team_name, extract_explicit_team_names
-from src.ollama_client import get_ollama_client
+from src.llm_client import get_llm_client
 from src.observability.logging import get_logger
 
 log = get_logger("entity_extractor")
@@ -52,17 +52,24 @@ async def extract_entities(
             content=content[:3000],
         )
 
-        client = get_ollama_client()
-        response = await client.chat(
-            model=settings.model_bulk,
-            messages=[
-                {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            format=ExtractedEntities.model_json_schema(),
+        schema_hint = json.dumps(ExtractedEntities.model_json_schema(), separators=(",", ":"))
+        structured_system = (
+            f"{EXTRACTION_SYSTEM_PROMPT}\n\n"
+            f"Respond with a single JSON object matching this schema:\n{schema_hint}\n"
+            "Return ONLY the JSON object — no prose, no code fences."
         )
 
-        content_text = response["message"]["content"]
+        client = get_llm_client()
+        response = await client.chat.completions.create(
+            model=settings.model_bulk,
+            messages=[
+                {"role": "system", "content": structured_system},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+
+        content_text = response.choices[0].message.content or ""
         parsed = json.loads(content_text)
         entities = ExtractedEntities.model_validate(parsed)
         return _normalize_entities(entities, content, source_path)

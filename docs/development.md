@@ -8,7 +8,7 @@
 | uv | latest | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | bun | 1.3+ | `curl -fsSL https://bun.sh/install \| bash` |
 | Docker | 24+ | [docker.com](https://docker.com) |
-| Ollama | current | local LLM runtime |
+| LLM proxy | running on `127.0.0.1:4000` | OpenAI-compatible endpoint |
 
 ## Local Setup
 
@@ -31,7 +31,7 @@ bun dev --port 5173
 ### Infrastructure
 
 ```bash
-docker compose up -d opensearch neo4j postgres redis
+docker compose up -d opensearch postgres redis
 ```
 
 ### First Run
@@ -39,12 +39,16 @@ docker compose up -d opensearch neo4j postgres redis
 ```bash
 cd backend
 uv run python ../scripts/setup_opensearch.py
-uv run python ../scripts/setup_neo4j.py
-uv run python ../scripts/seed_data.py ../data/sources
-uv run python ../scripts/ingest.py --data-dir ../data
+# Then open http://localhost:5173/setup to declare org → team → service → source
+# and trigger ingestion from the UI. Or drive it from the CLI once you have a
+# source declared:
+uv run python ../scripts/ingest.py --list                     # list declared sources
+uv run python ../scripts/ingest.py --source-id <uuid>         # ingest one
+uv run python ../scripts/ingest.py --source-id <uuid> --force # force re-index
 ```
 
-Or run the project root helper:
+Or run the project root helper, which starts everything and drops you at the
+setup wizard on first boot:
 
 ```bash
 ./run.sh
@@ -88,7 +92,7 @@ backend/src/
 ├── main.py                    FastAPI entry point + lifespan cleanup
 ├── config.py                  Settings
 ├── db.py                      Shared PostgreSQL pool helpers
-├── ollama_client.py           Shared Ollama client
+├── llm_client.py              Shared OpenAI-compatible LLM client
 │
 ├── connectors/
 │   ├── base.py
@@ -106,7 +110,7 @@ backend/src/
 │   ├── indexer.py
 │   ├── registry.py
 │   ├── analysis_store.py
-│   ├── graph_builder.py
+│   ├── knowledge_store.py
 │   ├── entity_extractor.py
 │   └── team_names.py
 │
@@ -114,7 +118,7 @@ backend/src/
 │   ├── hybrid_search.py
 │   ├── query_expansion.py
 │   ├── reranker.py
-│   └── graph_search.py
+│   └── knowledge_queries.py
 │
 ├── agents/
 │   ├── orchestrator.py

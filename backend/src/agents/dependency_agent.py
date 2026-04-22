@@ -9,11 +9,11 @@ from src.agents.result import AgentResult
 from src.agents.schemas import DependencyOutput
 from src.agents.state_codec import normalize_agent_result, normalize_chunks
 from src.agents.step_callbacks import get_step_callback
+from src.catalog import ServiceRepository
 from src.config import settings
-from src.ingestion.graph_builder import KnowledgeGraphBuilder
 from src.models.chunk import Chunk
 from src.observability.logging import get_logger
-from src.retrieval.graph_search import find_related_services
+from src.retrieval.knowledge_queries import find_related_services
 from src.retrieval.reranker import rerank_for_agent
 
 log = get_logger("dependency_agent")
@@ -36,7 +36,7 @@ async def dependency_agent(state: dict[str, Any]) -> dict[str, Any]:
     service_names = _extract_service_names(routing_data, chunks)
 
     try:
-        graph = await KnowledgeGraphBuilder.create()
+        service_repo = await ServiceRepository.create()
 
         if on_step:
             await on_step(
@@ -48,8 +48,8 @@ async def dependency_agent(state: dict[str, Any]) -> dict[str, Any]:
                 }
             )
 
-        deps_map = await find_related_services(graph, service_names, depth=2)
-        await graph.close()
+        deps_map = await find_related_services(service_repo, service_names, depth=2)
+        await service_repo.close()
 
         chunks_text = _format_chunks(ranked_chunks)
         graph_deps = json.dumps(deps_map, indent=2, default=str)

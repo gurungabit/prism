@@ -1,15 +1,24 @@
-import { useSources, useIngest } from "../hooks/useSources";
-import { SourceCard } from "../components/sources/SourceCard";
+import { Link } from "@tanstack/react-router";
+import { Plus, Plug, Sparkles } from "lucide-react";
+
 import { Button } from "../components/shared/Button";
 import { EmptyState } from "../components/shared/EmptyState";
 import { Skeleton } from "../components/shared/Skeleton";
-import { Database, RefreshCw, RotateCcw } from "lucide-react";
+import { DeclaredSourceRow } from "../components/sources/DeclaredSourceRow";
+import { useDeclaredSources } from "../hooks/useCatalog";
+import { useOrgs } from "../hooks/useCatalog";
 
+/**
+ * Lists every declared source across the org. Each row is a declared source,
+ * not a connector "platform" -- so if the user attached the GitLab connector
+ * three times under different teams/services, three rows show up.
+ */
 export function SourcesPage() {
-  const sources = useSources();
-  const { ingest, fullIngest } = useIngest();
+  const sources = useDeclaredSources();
+  const orgs = useOrgs();
 
-  const sourceGroups = sources.data?.sources ?? [];
+  const sourceList = sources.data?.sources ?? [];
+  const hasOrg = (orgs.data?.orgs ?? []).length > 0;
 
   return (
     <div className="max-w-[1000px] mx-auto px-6 py-8 space-y-8">
@@ -19,28 +28,16 @@ export function SourcesPage() {
             Sources
           </h1>
           <p className="text-[12px] text-zinc-400 dark:text-zinc-500 mt-1">
-            Data platforms connected to your knowledge base.
+            Declared data sources attached to your org, teams, or individual
+            services.
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            icon={<RefreshCw className="w-3.5 h-3.5" />}
-            loading={ingest.isPending}
-            onClick={() => ingest.mutate()}
-          >
-            Sync
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            icon={<RotateCcw className="w-3.5 h-3.5" />}
-            loading={fullIngest.isPending}
-            onClick={() => fullIngest.mutate()}
-          >
-            Full Re-index
-          </Button>
+          <Link to="/sources/new">
+            <Button size="sm" icon={<Plus className="w-3.5 h-3.5" />}>
+              Add source
+            </Button>
+          </Link>
         </div>
       </div>
 
@@ -55,26 +52,34 @@ export function SourcesPage() {
             <Skeleton className="h-3 w-1/4" />
           </div>
         </div>
-      ) : sourceGroups.length > 0 ? (
+      ) : !hasOrg ? (
+        <EmptyState
+          icon={<Sparkles className="w-10 h-10" />}
+          title="Set up your organization first"
+          description="PRISM needs at least an org and a team before you can attach a source."
+          action={
+            <Link to="/">
+              <Button size="sm">Create your org</Button>
+            </Link>
+          }
+        />
+      ) : sourceList.length > 0 ? (
         <div className="stagger-children">
-          {sourceGroups.map((group) => (
-            <SourceCard key={group.platform} source={group} />
+          {sourceList.map((source) => (
+            <DeclaredSourceRow key={source.id} source={source} />
           ))}
         </div>
       ) : (
         <EmptyState
-          icon={<Database className="w-10 h-10" />}
-          title="No data sources found"
-          description="Run an ingestion to populate your knowledge base from connected platforms."
+          icon={<Plug className="w-10 h-10" />}
+          title="No sources attached yet"
+          description="Connect GitLab or another source to populate the knowledge base. Every document it fetches carries the scope you declared."
           action={
-            <Button
-              size="sm"
-              icon={<RefreshCw className="w-3.5 h-3.5" />}
-              loading={ingest.isPending}
-              onClick={() => ingest.mutate()}
-            >
-              Run Ingestion
-            </Button>
+            <Link to="/sources/new">
+              <Button size="sm" icon={<Plus className="w-3.5 h-3.5" />}>
+                Add source
+              </Button>
+            </Link>
           }
         />
       )}
