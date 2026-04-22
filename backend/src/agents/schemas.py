@@ -127,15 +127,38 @@ QuestionType = Literal[
 ]
 
 
+PlanMode = Literal["full", "chat"]
+
+
 class PlanOutput(BaseModel):
     """Planner decision about which downstream agents to run.
 
     The planner is the orchestrator's one-shot classifier: it reads the
-    requirement and picks which sub-agents are worth paying for. Retrieve +
-    citations + synthesize always run -- they're the backbone. The four keys
-    below can each be skipped when the question doesn't need them.
+    requirement (plus any prior-thread context) and picks:
+
+    - ``mode``: ``"full"`` runs the whole pipeline. ``"chat"`` skips agents
+      and answers the question directly from prior context -- used for
+      follow-ups that are clarifications/tweaks of an earlier analysis.
+    - ``agents_to_run``: only relevant for ``mode == "full"``; retrieve +
+      citations + synthesize always run, the four keys below are optional.
     """
 
+    mode: PlanMode = "full"
     question_type: QuestionType
     agents_to_run: list[PlanAgentKey]
     reasoning: str = ""
+
+
+class ChatAnswerOutput(BaseModel):
+    """Short-answer output for ``mode == "chat"`` follow-ups."""
+
+    answer: str
+    # Paths the answer leans on. The UI linkifies them against the thread's
+    # accumulated source map.
+    cited_paths: list[str] = []
+
+
+class RollingSummaryOutput(BaseModel):
+    """One-paragraph memo of a completed run, fed back into future turns."""
+
+    summary: str

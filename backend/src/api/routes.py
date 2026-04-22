@@ -42,6 +42,13 @@ class AnalyzeRequest(BaseModel):
     known_teams: str = ""
     known_services: str = ""
     questions_to_answer: str = ""
+    # Threading: when set, this run is a follow-up in an existing thread.
+    # The backend loads the parent's (+ earlier turns') context before
+    # kicking off the pipeline.
+    parent_analysis_id: str | None = None
+    # When true, force full-analysis mode even on follow-ups. Used by the UI's
+    # "Run full analysis" button on chat-mode responses.
+    force_full: bool = False
 
     def to_analysis_input(self) -> AnalysisInput:
         return AnalysisInput(
@@ -77,6 +84,26 @@ async def start_analysis(request: AnalyzeRequest, background_tasks: BackgroundTa
     analysis_id = str(uuid.uuid4())
     analysis_input = request.to_analysis_input()
 
+    # Thread bookkeeping: if this is a follow-up, inherit the parent's
+    # thread_id; otherwise this run starts a new thread (thread_id defaults
+    # to analysis_id in the repo).
+    thread_id = analysis_id
+    parent_row = None
+    if request.parent_analysis_id:
+        try:
+            repo = await AnalysisRepository.create()
+            parent_row = await repo.get(request.parent_analysis_id)
+            await repo.close()
+        except Exception as db_err:
+            log.warning(
+                "analysis_parent_lookup_failed",
+                parent=request.parent_analysis_id,
+                error=str(db_err),
+            )
+        if parent_row is None:
+            raise HTTPException(status_code=404, detail="parent_analysis_id not found")
+        thread_id = parent_row.get("thread_id") or parent_row["analysis_id"]
+
     _analyses[analysis_id] = {
         "status": "running",
         "requirement": request.requirement,
@@ -86,34 +113,123 @@ async def start_analysis(request: AnalyzeRequest, background_tasks: BackgroundTa
 
     try:
         repo = await AnalysisRepository.create()
-        await repo.insert(analysis_id, request.requirement)
+        await repo.insert(
+            analysis_id,
+            request.requirement,
+            thread_id=thread_id,
+            parent_analysis_id=request.parent_analysis_id,
+            # We don't know kind yet (the planner decides). Start as 'full'
+            # and the task below updates it once the plan resolves. The UI
+            # treats in-flight runs as unknown anyway.
+            kind="full",
+        )
         await repo.close()
     except Exception as db_err:
         log.warning("analysis_db_insert_failed", analysis_id=analysis_id, error=str(db_err))
 
-    background_tasks.add_task(_run_analysis_task, analysis_id, analysis_input.model_dump())
+    background_tasks.add_task(
+        _run_analysis_task,
+        analysis_id,
+        analysis_input.model_dump(),
+        thread_id,
+        request.parent_analysis_id,
+        request.force_full,
+    )
 
     return {
         "analysis_id": analysis_id,
+        "thread_id": thread_id,
         "stream_url": f"/api/analyze/{analysis_id}/stream",
     }
 
 
-async def _run_analysis_task(analysis_id: str, analysis_input_data: dict) -> None:
+async def _load_prior_turns(thread_id: str, parent_analysis_id: str) -> list[dict]:
+    """Load every completed turn before ``parent_analysis_id`` plus the
+    parent itself, oldest first. The orchestrator's planner + chat node
+    consume this list as its thread context.
+    """
+    try:
+        repo = await AnalysisRepository.create()
+        try:
+            rows = await repo.list_thread(thread_id)
+        finally:
+            await repo.close()
+    except Exception as db_err:
+        log.warning("thread_load_failed", thread_id=thread_id, error=str(db_err))
+        return []
+
+    out: list[dict] = []
+    for row in rows:
+        if row["analysis_id"] == parent_analysis_id:
+            # include the parent itself, then stop walking forward
+            out.append(_turn_from_row(row))
+            break
+        if row["status"] == "complete":
+            out.append(_turn_from_row(row))
+    return out
+
+
+def _turn_from_row(row: dict) -> dict:
+    report = row.get("report") or {}
+    if isinstance(report, str):
+        try:
+            report = json.loads(report)
+        except json.JSONDecodeError:
+            report = {}
+    return {
+        "analysis_id": row["analysis_id"],
+        "requirement": row["requirement"],
+        "kind": row.get("kind", "full"),
+        "rolling_summary": row.get("rolling_summary", "") or "",
+        "report": report if isinstance(report, dict) else {},
+        # We intentionally don't persist per-run chunks -- chat-mode merges
+        # chunks from prior-turn reports via ``report.all_sources`` if
+        # needed. Keeping this field for parity with the state shape.
+        "retrieved_chunks": [],
+    }
+
+
+async def _run_analysis_task(
+    analysis_id: str,
+    analysis_input_data: dict,
+    thread_id: str,
+    parent_analysis_id: str | None,
+    force_full: bool,
+) -> None:
     on_step = create_step_callback(analysis_id)
     started_at = time.monotonic()
     analysis_input = AnalysisInput.model_validate(analysis_input_data)
 
+    prior_turns = (
+        await _load_prior_turns(thread_id, parent_analysis_id)
+        if parent_analysis_id
+        else []
+    )
+
+    # "Run full analysis" button on a chat response: strip prior_turns so the
+    # planner re-enters first-turn mode and can't downgrade to chat.
+    if force_full:
+        prior_turns = []
+
     try:
-        report = await run_analysis(
+        result = await run_analysis(
             requirement=analysis_input.requirement,
             analysis_id=analysis_id,
             analysis_input=analysis_input,
             on_step=on_step,
+            prior_turns=prior_turns,
         )
 
         duration = time.monotonic() - started_at
-        report_dict = report.model_dump(mode="json")
+        report_dict = result.report.model_dump(mode="json")
+        # Embed chat payload on the stored report so the UI can distinguish
+        # chat vs full turns without hitting a second endpoint.
+        if result.kind == "chat" and result.chat_answer:
+            report_dict["chat_answer"] = result.chat_answer
+        report_dict["kind"] = result.kind
+        report_dict["thread_id"] = thread_id
+        report_dict["parent_analysis_id"] = parent_analysis_id
+
         _analyses[analysis_id]["status"] = "complete"
         _analyses[analysis_id]["report"] = report_dict
 
@@ -122,9 +238,24 @@ async def _run_analysis_task(analysis_id: str, analysis_input_data: dict) -> Non
         try:
             repo = await AnalysisRepository.create()
             await repo.update_complete(analysis_id, report_dict, duration)
+            # Planner may have flipped kind to 'chat'; make sure the DB row
+            # reflects the actual run type.
+            if result.kind != "full":
+                async with repo.pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE analyses SET kind = $2 WHERE analysis_id = $1",
+                        analysis_id,
+                        result.kind,
+                    )
+            if result.rolling_summary:
+                await repo.update_rolling_summary(analysis_id, result.rolling_summary)
             await repo.close()
         except Exception as db_err:
-            log.warning("analysis_db_update_complete_failed", analysis_id=analysis_id, error=str(db_err))
+            log.warning(
+                "analysis_db_update_complete_failed",
+                analysis_id=analysis_id,
+                error=str(db_err),
+            )
 
     except Exception as e:
         log.error("analysis_task_failed", analysis_id=analysis_id, error=str(e))
@@ -366,11 +497,87 @@ async def list_history(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ):
+    """List analysis threads (one row per thread, not per run).
+
+    The UI renders each row as a collapsible thread card showing the root
+    requirement, turn count, and last activity. Clicking opens
+    ``/analyze/<thread_id>`` which renders the stacked thread view.
+    """
     repo = await AnalysisRepository.create()
-    analyses = await repo.list_recent(limit=limit, offset=offset)
-    total = await repo.count()
+    threads = await repo.list_threads(limit=limit, offset=offset)
+    total = await repo.count_threads()
     await repo.close()
-    return {"analyses": analyses, "total": total}
+    return {"threads": threads, "total": total}
+
+
+@router.get("/threads/{thread_id}")
+async def get_thread(thread_id: str):
+    """Full ordered list of runs in a thread, oldest-first.
+
+    The URL segment accepts either a thread_id or any run_id within the
+    thread -- the API resolves down to the thread_id so links from older
+    single-run analyses still work.
+
+    Each run carries its requirement, kind ('full' or 'chat'), status,
+    rolling_summary, and the stored report (which contains either a full
+    PRISMReport or a chat_answer payload).
+    """
+    repo = await AnalysisRepository.create()
+    try:
+        rows = await repo.list_thread(thread_id)
+        if not rows:
+            # Caller passed a run_id that isn't a thread root. Resolve via
+            # the run's row and re-query by its real thread_id.
+            row = await repo.get(thread_id)
+            if row and row.get("thread_id"):
+                thread_id = row["thread_id"]
+                rows = await repo.list_thread(thread_id)
+    finally:
+        await repo.close()
+    if not rows:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    turns: list[dict] = []
+    for row in rows:
+        report = row.get("report")
+        if isinstance(report, str):
+            try:
+                report = json.loads(report)
+            except json.JSONDecodeError:
+                report = None
+        turns.append(
+            {
+                "analysis_id": row["analysis_id"],
+                "parent_analysis_id": row.get("parent_analysis_id"),
+                "kind": row.get("kind", "full"),
+                "requirement": row["requirement"],
+                "status": row["status"],
+                "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+                "duration_seconds": row.get("duration_seconds"),
+                "rolling_summary": row.get("rolling_summary", "") or "",
+                "report": report,
+            }
+        )
+    return {"thread_id": thread_id, "turns": turns}
+
+
+@router.get("/analyze/resolve/{analysis_id}")
+async def resolve_analysis_thread(analysis_id: str) -> dict:
+    """Cheap ``run_id -> thread_id`` lookup. The UI uses this to redirect
+    ``/analyze/<runId>`` URLs to the canonical ``/analyze/<threadId>`` URL
+    when the runId isn't already the thread root.
+    """
+    repo = await AnalysisRepository.create()
+    try:
+        row = await repo.get(analysis_id)
+    finally:
+        await repo.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    return {
+        "analysis_id": analysis_id,
+        "thread_id": row.get("thread_id") or analysis_id,
+    }
 
 
 class ChatRequest(BaseModel):
