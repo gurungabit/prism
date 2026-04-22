@@ -6,7 +6,6 @@ import {
   CheckCircle2,
   FlaskConical,
   Loader2,
-  MessageCircle,
 } from "lucide-react";
 import type { ThreadTurn } from "../lib/api";
 import { ChatInput } from "../components/chat/ChatInput";
@@ -1437,19 +1436,17 @@ export function AnalyzeRunPage() {
 
       {/* Input pinned at bottom of the flex column. ChatInput matches the
           /chat page's affordance so users get consistent muscle memory. */}
-      <div className="border-t border-zinc-200/60 dark:border-zinc-700/30 bg-[#fafaf9] dark:bg-[#131315]">
-        <ChatInput
-          disabled={hasRunning || startAnalysis.isPending}
-          placeholder={
-            hasRunning
-              ? "Waiting for previous turn..."
-              : "Ask a follow-up. I'll answer from prior context, or run a full analysis if needed."
-          }
-          onSend={(text) => {
-            void submitFollowUp(text, false);
-          }}
-        />
-      </div>
+      <ChatInput
+        disabled={hasRunning || startAnalysis.isPending}
+        placeholder={
+          hasRunning
+            ? "Waiting for previous turn..."
+            : "Ask a follow-up. I'll answer from prior context, or run a full analysis if needed."
+        }
+        onSend={(text) => {
+          void submitFollowUp(text, false);
+        }}
+      />
     </div>
   );
 }
@@ -1504,28 +1501,26 @@ function ChatTurnCard({
   const isRunning = turn.status === "running";
   const [triggering, setTriggering] = useState(false);
 
+  // Chat-style layout: user question right-aligned as a bubble, answer
+  // left-aligned as prose. Matches the /chat page conventions.
   return (
-    <div className="rounded-lg border border-zinc-200/70 dark:border-zinc-700/40 bg-white dark:bg-[#1e1e20] px-4 py-3 space-y-2">
-      <div className="flex items-start gap-2 text-[12px]">
-        <MessageCircle className="w-3.5 h-3.5 text-[var(--color-accent)] dark:text-[var(--color-accent-dark)] mt-0.5 flex-shrink-0" />
-        <div className="flex-1 min-w-0">
-          <div className="text-[11px] font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500 mb-0.5">
-            Follow-up · chat
-          </div>
-          <div className="text-[13px] text-zinc-700 dark:text-zinc-300 font-medium">
-            {turn.requirement}
-          </div>
+    <div className="space-y-3">
+      {/* User bubble */}
+      <div className="flex justify-end">
+        <div className="max-w-[75%] bg-zinc-100 dark:bg-zinc-700/40 rounded-2xl rounded-br-md px-4 py-2.5 text-[13px] text-zinc-800 dark:text-zinc-200 leading-relaxed whitespace-pre-wrap">
+          {turn.requirement}
         </div>
       </div>
 
+      {/* Assistant response */}
       {isRunning ? (
-        <div className="flex items-center gap-2 text-[12px] text-zinc-500 dark:text-zinc-400 pl-5">
-          <Loader2 className="w-3 h-3 animate-spin" />
+        <div className="flex items-center gap-2 text-[13px] text-zinc-500 dark:text-zinc-400">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />
           Answering from prior context...
         </div>
       ) : (
-        <div className="pl-5 space-y-2">
-          <p className="text-[13px] text-zinc-700 dark:text-zinc-300 leading-relaxed whitespace-pre-wrap">
+        <div className="space-y-3">
+          <p className="text-[13px] text-zinc-700 dark:text-zinc-300 leading-[1.7] whitespace-pre-wrap">
             {answer || "(no answer)"}
           </p>
 
@@ -1543,7 +1538,7 @@ function ChatTurnCard({
           )}
 
           {onRunFullAnalysis && (
-            <div className="pt-1">
+            <div>
               <Button
                 variant="secondary"
                 size="sm"
