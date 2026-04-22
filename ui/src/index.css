@@ -131,6 +131,43 @@ h1, h2, h3, h4 {
   background: var(--color-zinc-500);
 }
 
+/* ── React Flow dark-mode overrides ─────────────────── */
+/* xyflow ships white-on-white defaults for Controls + MiniMap. Without these
+   overrides the zoom buttons and the minimap background vanish against our
+   dark surfaces. */
+
+.dark .react-flow__controls {
+  background: transparent;
+}
+
+.dark .react-flow__controls-button {
+  background: #27272a;
+  border-bottom: 1px solid rgb(63 63 70 / 0.6);
+  color: #e4e4e7;
+  fill: #e4e4e7;
+}
+
+.dark .react-flow__controls-button:hover {
+  background: #3f3f46;
+}
+
+.dark .react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.dark .react-flow__minimap {
+  background: #18181b;
+}
+
+.dark .react-flow__minimap-mask {
+  fill: rgb(24 24 27 / 0.7);
+}
+
+.dark .react-flow__attribution {
+  background: transparent;
+  color: rgb(161 161 170 / 0.6);
+}
+
 /* ── Animations ─────────────────────────────────────── */
 
 @keyframes breathing {
