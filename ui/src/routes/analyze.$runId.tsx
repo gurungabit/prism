@@ -1514,10 +1514,12 @@ function ThreadTurnCard({
     </div>
   );
 
-  // Pending: planner hasn't decided yet. Show a lightweight typing-
-  // indicator in chat style so the user sees acknowledgement without the
-  // full pipeline view flashing first.
-  if (turn.kind === "pending") {
+  // Pending: planner hasn't decided yet. Show a lightweight "thinking..."
+  // indicator for follow-ups so the full pipeline doesn't flash before
+  // the planner resolves. For the first turn we already know the answer
+  // must be "full" (planner forces it), so we skip the pending state and
+  // jump straight to the pipeline view.
+  if (turn.kind === "pending" && turnIndex > 1) {
     return (
       <div className="space-y-3">
         {bubble}
