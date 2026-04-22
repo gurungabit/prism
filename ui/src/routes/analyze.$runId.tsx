@@ -405,7 +405,18 @@ function EventLogSection({
 // SingleRunPanel renders one run's live/completed state -- the existing
 // monolithic view. The thread route component above it decides when to
 // mount this (for the active turn) vs. a compact card for prior turns.
-export function SingleRunPanel({ runId }: { runId: string }) {
+//
+// When ``embedded`` is true (the normal thread-view path), we drop the
+// standalone hero (back arrow + big requirement heading) because the
+// surrounding ThreadTurnCard already shows that context. Only the status
+// strip + PDF button remain.
+export function SingleRunPanel({
+  runId,
+  embedded = true,
+}: {
+  runId: string;
+  embedded?: boolean;
+}) {
   const stream = useAnalysisStream();
   const timelineEndRef = useRef<HTMLDivElement>(null);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
@@ -507,80 +518,91 @@ export function SingleRunPanel({ runId }: { runId: string }) {
   }
 
   return (
-    <div className="max-w-[1200px] mx-auto px-6 py-6 space-y-0">
+    <div
+      className={
+        embedded
+          ? "px-6 py-4 space-y-0"
+          : "max-w-[1200px] mx-auto px-6 py-6 space-y-0"
+      }
+    >
       {/* ═══ HEADER BAR ══════════════════════════════════ */}
-      <div className="pb-5 border-b border-zinc-200/60 dark:border-zinc-700/30 space-y-4">
-        <div className="flex items-start gap-3 min-w-0">
-          <Link
-            to="/analyze"
-            className="mt-1 p-1.5 rounded-lg text-zinc-300 dark:text-zinc-600 hover:text-zinc-500 dark:hover:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700/30 transition-colors flex-shrink-0"
-          >
-            <ArrowLeft className="w-4 h-4" />
-          </Link>
-          <div className="min-w-0 flex-1 space-y-2">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-400 dark:text-zinc-500">
-              Requirement
-            </p>
-            <h1 className="max-w-[980px] text-[21px] sm:text-[25px] font-semibold tracking-tight leading-[1.18] text-zinc-900 dark:text-zinc-100 whitespace-normal break-words">
-              {requirementText}
-            </h1>
+      {!embedded && (
+        <div className="pb-5 border-b border-zinc-200/60 dark:border-zinc-700/30 space-y-4">
+          <div className="flex items-start gap-3 min-w-0">
+            <Link
+              to="/analyze"
+              className="mt-1 p-1.5 rounded-lg text-zinc-300 dark:text-zinc-600 hover:text-zinc-500 dark:hover:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700/30 transition-colors flex-shrink-0"
+            >
+              <ArrowLeft className="w-4 h-4" />
+            </Link>
+            <div className="min-w-0 flex-1 space-y-2">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-400 dark:text-zinc-500">
+                Requirement
+              </p>
+              <h1 className="max-w-[980px] text-[21px] sm:text-[25px] font-semibold tracking-tight leading-[1.18] text-zinc-900 dark:text-zinc-100 whitespace-normal break-words">
+                {requirementText}
+              </h1>
+            </div>
           </div>
         </div>
+      )}
 
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div className="flex flex-wrap items-center gap-2 gap-y-2">
-            <span className="text-[11px] font-mono text-zinc-400 dark:text-zinc-500">
-              {runId}
-            </span>
-            {isLive && (
-              <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200/60 dark:border-emerald-700/40">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-breathing" />
-                <span className="text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
-                  Live
-                </span>
-              </div>
-            )}
-            {isReconnecting && (
-              <Badge variant="warning" size="sm">
-                <WifiOff className="w-2.5 h-2.5 mr-1" />
-                Reconnecting
-              </Badge>
-            )}
-            {stream.streamStatus === "error" && (
-              <Badge variant="danger" size="sm">
-                <WifiOff className="w-2.5 h-2.5 mr-1" />
-                Disconnected
-              </Badge>
-            )}
-            {isComplete && report && (
-              <Badge variant="success" size="sm">
-                Complete
-              </Badge>
-            )}
-            {report?.duration_seconds ? (
-              <span className="text-[11px] font-mono text-zinc-400 dark:text-zinc-500">
-                {fmtDuration(report.duration_seconds)}
+      {/* Status + PDF strip. Rendered in both modes, but compact when
+          embedded since the surrounding card already carries the title. */}
+      <div
+        className={
+          embedded
+            ? "flex flex-wrap items-center gap-2 gap-y-2 pb-3"
+            : "flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between pt-4 pb-4 border-b border-zinc-200/60 dark:border-zinc-700/30"
+        }
+      >
+        <div className="flex flex-wrap items-center gap-2 gap-y-2 flex-1 min-w-0">
+          <span className="text-[11px] font-mono text-zinc-400 dark:text-zinc-500 truncate">
+            {runId}
+          </span>
+          {isLive && (
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200/60 dark:border-emerald-700/40">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-breathing" />
+              <span className="text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                Live
               </span>
-            ) : null}
-          </div>
-
-          {isComplete && report && (
-            <div className="flex items-center justify-start lg:justify-end gap-3">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-400 dark:text-zinc-500">
-                Export Brief
-              </span>
-              <Button
-                variant="accent"
-                size="md"
-                loading={isExportingPdf}
-                icon={<FileDown />}
-                onClick={handleDownloadPdf}
-              >
-                Download PDF
-              </Button>
             </div>
           )}
+          {isReconnecting && (
+            <Badge variant="warning" size="sm">
+              <WifiOff className="w-2.5 h-2.5 mr-1" />
+              Reconnecting
+            </Badge>
+          )}
+          {stream.streamStatus === "error" && (
+            <Badge variant="danger" size="sm">
+              <WifiOff className="w-2.5 h-2.5 mr-1" />
+              Disconnected
+            </Badge>
+          )}
+          {isComplete && report && (
+            <Badge variant="success" size="sm">
+              Complete
+            </Badge>
+          )}
+          {report?.duration_seconds ? (
+            <span className="text-[11px] font-mono text-zinc-400 dark:text-zinc-500">
+              {fmtDuration(report.duration_seconds)}
+            </span>
+          ) : null}
         </div>
+
+        {isComplete && report && (
+          <Button
+            variant={embedded ? "secondary" : "accent"}
+            size="sm"
+            loading={isExportingPdf}
+            icon={<FileDown />}
+            onClick={handleDownloadPdf}
+          >
+            {embedded ? "PDF" : "Download PDF"}
+          </Button>
+        )}
       </div>
 
       {pdfError && (
