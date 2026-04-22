@@ -5,6 +5,7 @@ import json
 import time
 import uuid
 from contextlib import AsyncExitStack
+from dataclasses import dataclass
 from typing import Annotated, Any, TypedDict
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -15,15 +16,24 @@ from src.agents.coverage_agent import coverage_agent
 from src.agents.dependency_agent import dependency_agent
 from src.agents.llm import llm_call
 from src.agents.prompts import (
+    CHAT_ANSWER_SYSTEM_PROMPT,
     PLANNER_SYSTEM_PROMPT,
+    ROLLING_SUMMARY_SYSTEM_PROMPT,
     SYNTHESIS_SYSTEM_PROMPT,
+    build_chat_answer_prompt,
+    build_rolling_summary_prompt,
     build_synthesis_prompt,
 )
 from src.agents.result import AgentResult
 from src.agents.retrieval_agent import retrieval_agent
 from src.agents.risk_effort_agent import risk_effort_agent
 from src.agents.router_agent import router_agent
-from src.agents.schemas import PlanOutput, SynthesisOutput
+from src.agents.schemas import (
+    ChatAnswerOutput,
+    PlanOutput,
+    RollingSummaryOutput,
+    SynthesisOutput,
+)
 from src.agents.state_codec import checkpoint_safe_update, normalize_chunks
 from src.agents.step_callbacks import clear_step_callback, get_step_callback, register_step_callback
 from src.config import settings
@@ -79,6 +89,10 @@ class OrchestratorState(TypedDict):
     # ``PlanOutput.agents_to_run``. Empty/missing means "run all" for
     # backwards compatibility with callers that don't hit the planner.
     plan: dict | None
+    # Thread context seeded from prior runs on follow-ups. Each entry:
+    # {requirement, kind, rolling_summary, report, retrieved_chunks}.
+    # Empty list for first-turn runs.
+    prior_turns: list
     team_routing: AgentResult | None
     dependencies: AgentResult | None
     risk_assessment: AgentResult | None
@@ -89,6 +103,8 @@ class OrchestratorState(TypedDict):
     retrieval_rounds: int
     agent_trace: list
     final_report: dict | None
+    # Chat-mode runs populate this instead of final_report.
+    chat_answer: dict | None
 
 
 def _result_data(result: AgentResult | dict | None) -> dict:
@@ -104,11 +120,39 @@ def _result_data(result: AgentResult | dict | None) -> dict:
 _ALL_AGENTS: list[str] = ["router", "dependencies", "risk_effort", "coverage"]
 
 
+def _format_thread_context(prior_turns: list) -> str:
+    """Render the thread's prior turns as a compact transcript for the
+    planner / chat-mode prompts. Uses rolling_summary for older turns when
+    available; falls back to the turn's exec summary or chat answer.
+    """
+    if not prior_turns:
+        return ""
+    lines: list[str] = []
+    for i, turn in enumerate(prior_turns, start=1):
+        req = (turn.get("requirement") or "").strip()
+        summary = (turn.get("rolling_summary") or "").strip()
+        if not summary:
+            report = turn.get("report") or {}
+            summary = (report.get("executive_summary") or "").strip()
+        if not summary:
+            answer = (turn.get("chat_answer") or {}).get("answer", "").strip()
+            summary = answer
+        kind = turn.get("kind", "full")
+        lines.append(f"Turn {i} [{kind}]: {req}\n  -> {summary or '(no summary)'}")
+    return "\n\n".join(lines)
+
+
 async def plan_node(state: OrchestratorState) -> dict:
     analysis_id = state["analysis_id"]
     on_step = get_step_callback(analysis_id)
     requirement = state["requirement"]
-    log.info("plan_start", analysis_id=analysis_id, requirement=requirement[:100])
+    prior_turns = state.get("prior_turns") or []
+    log.info(
+        "plan_start",
+        analysis_id=analysis_id,
+        requirement=requirement[:100],
+        prior_turn_count=len(prior_turns),
+    )
 
     if on_step:
         await on_step(
@@ -123,29 +167,46 @@ async def plan_node(state: OrchestratorState) -> dict:
     # analysis quality degrades gracefully instead of silently skipping
     # agents.
     plan_dict: dict = {
+        "mode": "full",
         "question_type": "general",
         "agents_to_run": list(_ALL_AGENTS),
         "reasoning": "Planner fallback (LLM unavailable) -- running all agents.",
     }
 
+    transcript = _format_thread_context(prior_turns)
+    user_prompt = (
+        f"Requirement:\n{requirement}\n\n"
+        + (f"Prior thread context:\n{transcript}\n\n" if transcript else "(No prior thread context — this is the first turn.)\n\n")
+        + "Decide the mode and which agents to run."
+    )
+
     try:
         plan = await llm_call(
-            prompt=f"Requirement:\n{requirement}\n\nDecide which agents to run.",
+            prompt=user_prompt,
             system_prompt=PLANNER_SYSTEM_PROMPT,
             output_schema=PlanOutput,
             model=settings.model_router,
             agent_name="plan",
             analysis_id=analysis_id,
         )
-        # Router is load-bearing for synthesis -- it emits primary_team, which
-        # drives the exec summary. Force it in unless the planner explicitly
-        # asked for coverage-only.
-        agents = list(dict.fromkeys(plan.agents_to_run))
-        if not agents:
-            agents = ["router"]
-        elif "router" not in agents and plan.question_type != "coverage":
-            agents = ["router"] + agents
+        # First turn can never be chat-mode -- there's no prior context to
+        # answer from. Force full to avoid the LLM mis-classifying an initial
+        # requirement as a follow-up.
+        mode = plan.mode if prior_turns else "full"
+
+        if mode == "chat":
+            agents: list[str] = []
+        else:
+            # Router is load-bearing for synthesis -- it emits primary_team,
+            # which drives the exec summary. Force it in unless the planner
+            # explicitly asked for coverage-only.
+            agents = list(dict.fromkeys(plan.agents_to_run))
+            if not agents:
+                agents = ["router"]
+            elif "router" not in agents and plan.question_type != "coverage":
+                agents = ["router"] + agents
         plan_dict = {
+            "mode": mode,
             "question_type": plan.question_type,
             "agents_to_run": agents,
             "reasoning": plan.reasoning,
@@ -157,18 +218,23 @@ async def plan_node(state: OrchestratorState) -> dict:
     log.info(
         "plan_complete",
         analysis_id=analysis_id,
+        mode=plan_dict["mode"],
         question_type=plan_dict["question_type"],
         agents_to_run=plan_dict["agents_to_run"],
         skipped=skipped,
     )
 
     if on_step:
-        agents_label = ", ".join(plan_dict["agents_to_run"])
+        if plan_dict["mode"] == "chat":
+            detail = f"[chat] {plan_dict['reasoning'][:80]}"
+        else:
+            agents_label = ", ".join(plan_dict["agents_to_run"])
+            detail = f"[{plan_dict['question_type']}] running: {agents_label}"
         await on_step(
             {
                 "agent": "plan",
                 "action": "results",
-                "detail": f"[{plan_dict['question_type']}] running: {agents_label}",
+                "detail": detail,
                 "data": plan_dict,
             }
         )
@@ -196,13 +262,22 @@ async def plan_node(state: OrchestratorState) -> dict:
 
 
 def _agent_enabled(state: OrchestratorState, key: str) -> bool:
-    """Return True if the planner asked for this agent (or didn't plan)."""
+    """Return True if the planner asked for this agent (or didn't plan).
+
+    Chat-mode plans don't route through agent nodes, but if they ever do
+    (e.g. a future edit adds them back into the graph), they're always
+    disabled.
+    """
     plan = state.get("plan")
     if not plan:
         return True
+    if isinstance(plan, dict) and plan.get("mode") == "chat":
+        return False
     agents = plan.get("agents_to_run") if isinstance(plan, dict) else None
-    if not agents:
+    if agents is None:
         return True
+    if not agents:
+        return False
     return key in agents
 
 
@@ -227,6 +302,122 @@ async def _emit_skipped(analysis_id: str, agent: str, reason: str) -> None:
 
 async def retrieve_node(state: OrchestratorState) -> dict:
     return checkpoint_safe_update(await retrieval_agent(state))
+
+
+async def chat_node(state: OrchestratorState) -> dict:
+    """Short-answer path for chat-mode follow-ups.
+
+    No retrieval, no agents -- we answer purely from the prior-turn context
+    plus whatever chunks were already attached to the thread. Output shape:
+    ``state["chat_answer"] = {"answer": str, "cited_paths": [...]}``.
+    """
+    analysis_id = state["analysis_id"]
+    on_step = get_step_callback(analysis_id)
+    prior_turns = state.get("prior_turns") or []
+
+    if on_step:
+        await on_step(
+            {
+                "agent": "chat",
+                "action": "answering",
+                "detail": "Answering from prior context...",
+            }
+        )
+
+    # Roll every prior turn's retrieved chunks forward into this turn so we
+    # can cite them without re-running retrieval. The newest turn's chunks
+    # win on path collisions (most recent last_modified + score).
+    merged_chunks: list = []
+    seen_paths: set[str] = set()
+    for turn in reversed(prior_turns):  # newest first so we prefer its chunks
+        for ch in turn.get("retrieved_chunks") or []:
+            # chunks may be AgentResult.data, dicts, or Chunk objects depending
+            # on how the parent was serialized.
+            path = ""
+            if isinstance(ch, dict):
+                metadata = ch.get("metadata") or {}
+                path = metadata.get("source_path", "")
+            else:
+                path = getattr(getattr(ch, "metadata", None), "source_path", "")
+            if not path or path in seen_paths:
+                continue
+            seen_paths.add(path)
+            merged_chunks.append(ch)
+
+    chunks_text = _chunks_for_chat_prompt(merged_chunks)
+    transcript = _format_thread_context(prior_turns)
+
+    default_answer = {
+        "answer": "I couldn't reach the language model just now. Try re-asking.",
+        "cited_paths": [],
+    }
+
+    try:
+        result = await llm_call(
+            prompt=build_chat_answer_prompt(
+                requirement=state["requirement"],
+                thread_transcript=transcript or "(no prior turns)",
+                chunks_text=chunks_text,
+            ),
+            system_prompt=CHAT_ANSWER_SYSTEM_PROMPT,
+            output_schema=ChatAnswerOutput,
+            model=settings.model_synthesis,
+            agent_name="chat",
+            analysis_id=analysis_id,
+            on_step=on_step,
+        )
+        answer_dict = {"answer": result.answer, "cited_paths": result.cited_paths}
+    except Exception as e:  # noqa: BLE001
+        log.error("chat_answer_failed", analysis_id=analysis_id, error=str(e))
+        answer_dict = default_answer
+
+    if on_step:
+        await on_step(
+            {
+                "agent": "chat",
+                "action": "results",
+                "detail": answer_dict["answer"][:160],
+                "data": answer_dict,
+            }
+        )
+        await on_step(
+            {
+                "agent": "chat",
+                "action": "complete",
+                "detail": "Follow-up answered",
+            }
+        )
+
+    return checkpoint_safe_update({"chat_answer": answer_dict})
+
+
+def _chunks_for_chat_prompt(chunks: list, max_chars: int = 12000) -> str:
+    """Flatten merged thread chunks into the chat prompt body. Truncates to
+    avoid blowing the context window on long threads."""
+    if not chunks:
+        return "(no prior chunks)"
+    parts: list[str] = []
+    total = 0
+    for i, ch in enumerate(chunks, start=1):
+        if isinstance(ch, dict):
+            metadata = ch.get("metadata") or {}
+            path = metadata.get("source_path", "")
+            content = ch.get("content") or ""
+        else:
+            path = getattr(getattr(ch, "metadata", None), "source_path", "")
+            content = getattr(ch, "content", "") or ""
+        snippet = f"[Doc {i}] {path}\n{content[:800]}"
+        if total + len(snippet) > max_chars:
+            break
+        parts.append(snippet)
+        total += len(snippet)
+    return "\n\n".join(parts)
+
+
+def route_after_plan(state: OrchestratorState) -> str:
+    """Branch after the planner: chat-mode skips retrieval and all agents."""
+    plan = state.get("plan") or {}
+    return "chat" if plan.get("mode") == "chat" else "retrieve"
 
 
 async def route_node(state: OrchestratorState) -> dict:
@@ -824,9 +1015,17 @@ def create_workflow() -> StateGraph:
     workflow.add_node("coverage", coverage_node)
     workflow.add_node("citations", citation_node)
     workflow.add_node("synthesize", synthesize_node)
+    workflow.add_node("chat", chat_node)
 
     workflow.set_entry_point("plan")
-    workflow.add_edge("plan", "retrieve")
+    # Plan branches: chat-mode follow-ups answer from prior context and exit;
+    # full-mode runs the normal pipeline.
+    workflow.add_conditional_edges(
+        "plan",
+        route_after_plan,
+        {"chat": "chat", "retrieve": "retrieve"},
+    )
+    workflow.add_edge("chat", END)
 
     workflow.add_edge("retrieve", "route")
     workflow.add_edge("route", "dependencies")
@@ -898,14 +1097,65 @@ async def shutdown_compiled_app() -> None:
             log.info("analysis_checkpointer_closed")
 
 
+@dataclass
+class AnalysisResult:
+    """Result of a single analysis run.
+
+    For ``kind == "full"``, ``report`` is the full PRISMReport.
+    For ``kind == "chat"``, ``report`` is a minimal shell (exec_summary =
+    chat answer) and ``chat_answer`` holds the raw payload.
+    """
+
+    analysis_id: str
+    kind: str
+    report: PRISMReport
+    chat_answer: dict | None
+    rolling_summary: str
+    plan: dict | None
+
+
+async def _summarize_turn(
+    analysis_id: str,
+    requirement: str,
+    kind: str,
+    body: str,
+) -> str:
+    """Run the rolling summarizer. Best-effort -- if the LLM fails we just
+    store an empty summary and future turns fall back to the exec summary."""
+    try:
+        result = await llm_call(
+            prompt=build_rolling_summary_prompt(
+                requirement=requirement,
+                kind=kind,
+                report_or_answer=body,
+            ),
+            system_prompt=ROLLING_SUMMARY_SYSTEM_PROMPT,
+            output_schema=RollingSummaryOutput,
+            model=settings.model_router,
+            agent_name="summarize",
+            analysis_id=analysis_id,
+        )
+        return result.summary
+    except Exception as e:  # noqa: BLE001
+        log.warning("rolling_summary_failed", analysis_id=analysis_id, error=str(e))
+        return ""
+
+
 async def run_analysis(
     requirement: str,
     analysis_id: str | None = None,
     analysis_input: AnalysisInput | dict | None = None,
     on_step: Any = None,
-) -> PRISMReport:
+    prior_turns: list[dict] | None = None,
+) -> AnalysisResult:
     analysis_id = analysis_id or str(uuid.uuid4())
-    log.info("analysis_start", analysis_id=analysis_id, requirement=requirement[:100])
+    prior_turns = prior_turns or []
+    log.info(
+        "analysis_start",
+        analysis_id=analysis_id,
+        requirement=requirement[:100],
+        prior_turn_count=len(prior_turns),
+    )
     start_time = time.time()
 
     if analysis_input is None:
@@ -931,6 +1181,7 @@ async def run_analysis(
         "search_query": search_query,
         "retrieved_chunks": [],
         "plan": None,
+        "prior_turns": prior_turns,
         "team_routing": None,
         "dependencies": None,
         "risk_assessment": None,
@@ -941,6 +1192,7 @@ async def run_analysis(
         "retrieval_rounds": 0,
         "agent_trace": [],
         "final_report": None,
+        "chat_answer": None,
     }
 
     config = {"configurable": {"thread_id": f"analysis-{analysis_id}"}}
@@ -952,16 +1204,56 @@ async def run_analysis(
 
     duration = time.time() - start_time
 
-    report_data = final_state.get("final_report", {})
-    if report_data:
-        report = PRISMReport.model_validate(report_data)
-        report.duration_seconds = duration
-    else:
+    plan = final_state.get("plan") or {}
+    mode = plan.get("mode", "full") if isinstance(plan, dict) else "full"
+    chat_answer = final_state.get("chat_answer")
+
+    if mode == "chat" and chat_answer:
+        # Chat-mode: minimal report shell; the real payload is chat_answer.
+        answer_text = chat_answer.get("answer", "")
         report = PRISMReport(
             analysis_id=analysis_id,
             requirement=requirement,
+            executive_summary=answer_text,
             duration_seconds=duration,
         )
+        rolling_summary = await _summarize_turn(
+            analysis_id=analysis_id,
+            requirement=requirement,
+            kind="chat",
+            body=answer_text,
+        )
+        kind = "chat"
+    else:
+        report_data = final_state.get("final_report", {})
+        if report_data:
+            report = PRISMReport.model_validate(report_data)
+            report.duration_seconds = duration
+        else:
+            report = PRISMReport(
+                analysis_id=analysis_id,
+                requirement=requirement,
+                duration_seconds=duration,
+            )
+        rolling_summary = await _summarize_turn(
+            analysis_id=analysis_id,
+            requirement=requirement,
+            kind="full",
+            body=report.executive_summary or requirement,
+        )
+        kind = "full"
 
-    log.info("analysis_complete", analysis_id=analysis_id, duration=f"{duration:.1f}s")
-    return report
+    log.info(
+        "analysis_complete",
+        analysis_id=analysis_id,
+        kind=kind,
+        duration=f"{duration:.1f}s",
+    )
+    return AnalysisResult(
+        analysis_id=analysis_id,
+        kind=kind,
+        report=report,
+        chat_answer=chat_answer if kind == "chat" else None,
+        rolling_summary=rolling_summary,
+        plan=plan if isinstance(plan, dict) else None,
+    )
