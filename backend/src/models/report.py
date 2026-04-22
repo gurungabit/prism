@@ -50,6 +50,9 @@ def build_search_query(analysis_input: AnalysisInput) -> str:
 
 class Citation(BaseModel):
     document_path: str
+    # Clickable URL to the original document when the connector provides one
+    # (e.g. GitLab blob URL). Empty for local/file-based platforms.
+    source_url: str = ""
     excerpt: str = ""
     last_modified: str = ""
     relevance_score: float = 0.0
@@ -150,6 +153,7 @@ class SourceDocument(BaseModel):
     id: str
     path: str
     platform: str
+    source_url: str = ""
     relevance_score: float = 0.0
     last_modified: str = ""
     is_stale: bool = False
