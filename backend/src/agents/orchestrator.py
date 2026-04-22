@@ -14,12 +14,16 @@ from src.agents.citation_agent import citation_agent
 from src.agents.coverage_agent import coverage_agent
 from src.agents.dependency_agent import dependency_agent
 from src.agents.llm import llm_call
-from src.agents.prompts import SYNTHESIS_SYSTEM_PROMPT, build_synthesis_prompt
+from src.agents.prompts import (
+    PLANNER_SYSTEM_PROMPT,
+    SYNTHESIS_SYSTEM_PROMPT,
+    build_synthesis_prompt,
+)
 from src.agents.result import AgentResult
 from src.agents.retrieval_agent import retrieval_agent
 from src.agents.risk_effort_agent import risk_effort_agent
 from src.agents.router_agent import router_agent
-from src.agents.schemas import SynthesisOutput
+from src.agents.schemas import PlanOutput, SynthesisOutput
 from src.agents.state_codec import checkpoint_safe_update, normalize_chunks
 from src.agents.step_callbacks import clear_step_callback, get_step_callback, register_step_callback
 from src.config import settings
@@ -71,6 +75,10 @@ class OrchestratorState(TypedDict):
     analysis_brief: str
     search_query: str
     retrieved_chunks: list
+    # Planner decision -- which downstream agents to run. Keys mirror
+    # ``PlanOutput.agents_to_run``. Empty/missing means "run all" for
+    # backwards compatibility with callers that don't hit the planner.
+    plan: dict | None
     team_routing: AgentResult | None
     dependencies: AgentResult | None
     risk_assessment: AgentResult | None
@@ -93,17 +101,75 @@ def _result_data(result: AgentResult | dict | None) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+_ALL_AGENTS: list[str] = ["router", "dependencies", "risk_effort", "coverage"]
+
+
 async def plan_node(state: OrchestratorState) -> dict:
     analysis_id = state["analysis_id"]
     on_step = get_step_callback(analysis_id)
-    log.info("plan_start", analysis_id=analysis_id, requirement=state["requirement"][:100])
+    requirement = state["requirement"]
+    log.info("plan_start", analysis_id=analysis_id, requirement=requirement[:100])
 
     if on_step:
         await on_step(
             {
                 "agent": "plan",
                 "action": "planning",
-                "detail": "Planning analysis strategy...",
+                "detail": "Picking which agents to run...",
+            }
+        )
+
+    # Default fallback -- if the LLM call fails we run the full pipeline so
+    # analysis quality degrades gracefully instead of silently skipping
+    # agents.
+    plan_dict: dict = {
+        "question_type": "general",
+        "agents_to_run": list(_ALL_AGENTS),
+        "reasoning": "Planner fallback (LLM unavailable) -- running all agents.",
+    }
+
+    try:
+        plan = await llm_call(
+            prompt=f"Requirement:\n{requirement}\n\nDecide which agents to run.",
+            system_prompt=PLANNER_SYSTEM_PROMPT,
+            output_schema=PlanOutput,
+            model=settings.model_router,
+            agent_name="plan",
+            analysis_id=analysis_id,
+        )
+        # Router is load-bearing for synthesis -- it emits primary_team, which
+        # drives the exec summary. Force it in unless the planner explicitly
+        # asked for coverage-only.
+        agents = list(dict.fromkeys(plan.agents_to_run))
+        if not agents:
+            agents = ["router"]
+        elif "router" not in agents and plan.question_type != "coverage":
+            agents = ["router"] + agents
+        plan_dict = {
+            "question_type": plan.question_type,
+            "agents_to_run": agents,
+            "reasoning": plan.reasoning,
+        }
+    except Exception as e:  # noqa: BLE001
+        log.warning("plan_llm_failed", analysis_id=analysis_id, error=str(e))
+
+    skipped = [a for a in _ALL_AGENTS if a not in plan_dict["agents_to_run"]]
+    log.info(
+        "plan_complete",
+        analysis_id=analysis_id,
+        question_type=plan_dict["question_type"],
+        agents_to_run=plan_dict["agents_to_run"],
+        skipped=skipped,
+    )
+
+    if on_step:
+        agents_label = ", ".join(plan_dict["agents_to_run"])
+        await on_step(
+            {
+                "agent": "plan",
+                "action": "results",
+                "detail": f"[{plan_dict['question_type']}] running: {agents_label}",
+                "data": plan_dict,
             }
         )
         await on_step(
@@ -116,9 +182,47 @@ async def plan_node(state: OrchestratorState) -> dict:
 
     return checkpoint_safe_update(
         {
-        "agent_trace": [{"agent": "orchestrator", "action": "plan", "timestamp": time.time()}],
+            "plan": plan_dict,
+            "agent_trace": [
+                {
+                    "agent": "orchestrator",
+                    "action": "plan",
+                    "timestamp": time.time(),
+                    "data": plan_dict,
+                }
+            ],
         }
     )
+
+
+def _agent_enabled(state: OrchestratorState, key: str) -> bool:
+    """Return True if the planner asked for this agent (or didn't plan)."""
+    plan = state.get("plan")
+    if not plan:
+        return True
+    agents = plan.get("agents_to_run") if isinstance(plan, dict) else None
+    if not agents:
+        return True
+    return key in agents
+
+
+async def _emit_skipped(analysis_id: str, agent: str, reason: str) -> None:
+    on_step = get_step_callback(analysis_id)
+    if on_step:
+        await on_step(
+            {
+                "agent": agent,
+                "action": "skipped",
+                "detail": reason,
+            }
+        )
+        await on_step(
+            {
+                "agent": agent,
+                "action": "complete",
+                "detail": "Skipped by planner",
+            }
+        )
 
 
 async def retrieve_node(state: OrchestratorState) -> dict:
@@ -126,18 +230,30 @@ async def retrieve_node(state: OrchestratorState) -> dict:
 
 
 async def route_node(state: OrchestratorState) -> dict:
+    if not _agent_enabled(state, "router"):
+        await _emit_skipped(state["analysis_id"], "router", "Planner skipped routing")
+        return {}
     return checkpoint_safe_update(await router_agent(state))
 
 
 async def deps_node(state: OrchestratorState) -> dict:
+    if not _agent_enabled(state, "dependencies"):
+        await _emit_skipped(state["analysis_id"], "dependencies", "Planner skipped dependencies")
+        return {}
     return checkpoint_safe_update(await dependency_agent(state))
 
 
 async def risk_node(state: OrchestratorState) -> dict:
+    if not _agent_enabled(state, "risk_effort"):
+        await _emit_skipped(state["analysis_id"], "risk_effort", "Planner skipped risk/effort")
+        return {}
     return checkpoint_safe_update(await risk_effort_agent(state))
 
 
 async def coverage_node(state: OrchestratorState) -> dict:
+    if not _agent_enabled(state, "coverage"):
+        await _emit_skipped(state["analysis_id"], "coverage", "Planner skipped coverage")
+        return {}
     return checkpoint_safe_update(await coverage_agent(state))
 
 
@@ -272,6 +388,35 @@ def _build_report(
         analysis_input=analysis_input,
     )
 
+    # Build a path -> source_url lookup from the retrieved chunks so every
+    # Citation can carry a clickable URL when the connector exposed one.
+    # Chunks sharing a path also share a URL, so last-write-wins is fine.
+    url_by_path: dict[str, str] = {}
+    for chunk in chunks:
+        path = chunk.metadata.source_path
+        url = chunk.metadata.source_url
+        if path and url:
+            url_by_path[path] = url
+
+    def _resolve_url(raw: str) -> str:
+        """Match a citation label (which may be a raw path or an LLM label
+        like ``Doc 1 - necrokings/RetryOps@main: README.md``) to a URL.
+
+        Exact match first; otherwise substring-match against known paths so
+        LLM-decorated labels still resolve.
+        """
+        if not raw:
+            return ""
+        if raw in url_by_path:
+            return url_by_path[raw]
+        for known, url in url_by_path.items():
+            if known in raw:
+                return url
+        return ""
+
+    def _cite(path: str) -> Citation:
+        return Citation(document_path=path, source_url=_resolve_url(path))
+
     if synthesis:
         report.executive_summary = synthesis.executive_summary
         report.team_routing_narrative = synthesis.team_routing_narrative
@@ -290,7 +435,7 @@ def _build_report(
                 name=primary.get("name", "Unknown"),
                 confidence=primary.get("confidence", 0.0),
                 justification=primary.get("justification", ""),
-                sources=[Citation(document_path=s) for s in primary.get("key_sources", [])],
+                sources=[_cite(s) for s in primary.get("key_sources", [])],
             ),
             supporting_teams=[
                 TeamCandidate(
@@ -298,7 +443,7 @@ def _build_report(
                     confidence=t.get("confidence", 0.0),
                     justification=t.get("justification", ""),
                     role=t.get("role", "supporting"),
-                    sources=[Citation(document_path=s) for s in t.get("key_sources", [])],
+                    sources=[_cite(s) for s in t.get("key_sources", [])],
                 )
                 for t in rd.get("supporting_teams", [])
             ],
@@ -310,7 +455,7 @@ def _build_report(
                 impact=s.get("impact", "informational"),
                 owning_team=s.get("owning_team", ""),
                 changes_needed=s.get("changes_needed", ""),
-                sources=[Citation(document_path=d) for d in s.get("source_docs", [])],
+                sources=[_cite(d) for d in s.get("source_docs", [])],
             )
             for s in rd.get("affected_services", [])
         ]
@@ -324,7 +469,7 @@ def _build_report(
                     to_service=d.get("to_service", ""),
                     dependency_type="blocking",
                     reason=d.get("reason", ""),
-                    sources=[Citation(document_path=s) for s in d.get("source_docs", [])],
+                    sources=[_cite(s) for s in d.get("source_docs", [])],
                 )
                 for d in dd.get("blocking", [])
             ],
@@ -334,7 +479,7 @@ def _build_report(
                     to_service=d.get("to_service", ""),
                     dependency_type="impacted",
                     reason=d.get("reason", ""),
-                    sources=[Citation(document_path=s) for s in d.get("source_docs", [])],
+                    sources=[_cite(s) for s in d.get("source_docs", [])],
                 )
                 for d in dd.get("impacted", [])
             ],
@@ -344,7 +489,7 @@ def _build_report(
                     to_service=d.get("to_service", ""),
                     dependency_type="informational",
                     reason=d.get("reason", ""),
-                    sources=[Citation(document_path=s) for s in d.get("source_docs", [])],
+                    sources=[_cite(s) for s in d.get("source_docs", [])],
                 )
                 for d in dd.get("informational", [])
             ],
@@ -360,7 +505,7 @@ def _build_report(
                     level=r.get("level", "medium"),
                     description=r.get("description", ""),
                     mitigation=r.get("mitigation", ""),
-                    sources=[Citation(document_path=s) for s in r.get("source_docs", [])],
+                    sources=[_cite(s) for s in r.get("source_docs", [])],
                 )
                 for r in ra.get("risks", [])
             ],
@@ -506,6 +651,7 @@ def _build_report(
                 id=chunk.document_id,
                 path=path,
                 platform=chunk.metadata.source_platform,
+                source_url=chunk.metadata.source_url or url_by_path.get(path, ""),
                 relevance_score=chunk.score,
                 last_modified=modified,
                 is_stale=any(path in s for s in stale_sources),
@@ -784,6 +930,7 @@ async def run_analysis(
         "analysis_brief": analysis_brief,
         "search_query": search_query,
         "retrieved_chunks": [],
+        "plan": None,
         "team_routing": None,
         "dependencies": None,
         "risk_assessment": None,

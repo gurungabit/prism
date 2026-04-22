@@ -110,3 +110,32 @@ class SynthesisOutput(BaseModel):
     data_quality_summary: str = ""
     recommendations: list[str] = []
     caveats: list[str] = []
+
+
+# Keys must match the orchestrator's downstream node names so the planner
+# can gate them directly by name. "router" is the agent name even though the
+# node is called "route".
+PlanAgentKey = Literal["router", "dependencies", "risk_effort", "coverage"]
+
+QuestionType = Literal[
+    "ownership",
+    "dependency",
+    "risk_effort",
+    "coverage",
+    "impact",
+    "general",
+]
+
+
+class PlanOutput(BaseModel):
+    """Planner decision about which downstream agents to run.
+
+    The planner is the orchestrator's one-shot classifier: it reads the
+    requirement and picks which sub-agents are worth paying for. Retrieve +
+    citations + synthesize always run -- they're the backbone. The four keys
+    below can each be skipped when the question doesn't need them.
+    """
+
+    question_type: QuestionType
+    agents_to_run: list[PlanAgentKey]
+    reasoning: str = ""

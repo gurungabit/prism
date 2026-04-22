@@ -18,6 +18,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ChevronRight,
+  ExternalLink,
   WifiOff,
   Clock,
   FileText,
@@ -47,30 +48,113 @@ type SourceDoc = PRISMReport["all_sources"][number];
 type DepEdge = PRISMReport["dependencies"]["blocking"][number];
 type ImpactMatrixRow = PRISMReport["impact_matrix"][number];
 
+// Turn inline path references (e.g. "necrokings/RetryOps@main:README.md")
+// inside a narrative string into clickable links when we have a URL for them.
+// We match on the raw path strings from ``report.all_sources`` rather than
+// parsing the "[Doc N]" prefix, because the LLM sometimes emits just the path,
+// sometimes the bracket + path, and sometimes a bare [Doc N] alone. Matching
+// paths directly handles all three cleanly.
+function linkifyNarrative(
+  text: string,
+  urlByPath: Record<string, string>,
+): ReactNode[] {
+  const paths = Object.keys(urlByPath)
+    .filter((p) => urlByPath[p])
+    .sort((a, b) => b.length - a.length);
+  if (paths.length === 0 || !text) return [text];
+
+  const escaped = paths.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const regex = new RegExp(`(${escaped.join("|")})`, "g");
+
+  const out: ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+  while ((match = regex.exec(text)) !== null) {
+    const path = match[1];
+    if (!path) continue;
+    if (match.index > lastIndex) out.push(text.slice(lastIndex, match.index));
+    out.push(
+      <a
+        key={`link-${key++}`}
+        href={urlByPath[path]}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-baseline gap-0.5 font-mono text-[11px] text-[var(--color-accent)] dark:text-[var(--color-accent-dark)] hover:underline break-all"
+      >
+        {path}
+      </a>,
+    );
+    lastIndex = match.index + path.length;
+  }
+  if (lastIndex < text.length) out.push(text.slice(lastIndex));
+  return out;
+}
+
+function Narrative({
+  text,
+  urlByPath,
+  className,
+}: {
+  text: string;
+  urlByPath: Record<string, string>;
+  className?: string;
+}) {
+  return (
+    <p
+      className={
+        className ??
+        "text-[12px] text-zinc-600 dark:text-zinc-400 leading-relaxed"
+      }
+    >
+      {linkifyNarrative(text, urlByPath)}
+    </p>
+  );
+}
+
 function InlineSources({ sources }: { sources: Citation[] }) {
   if (!sources || sources.length === 0) return null;
   return (
     <div className="mt-2 space-y-1.5">
-      {sources.map((s, i) => (
-        <div key={i} className="flex items-start gap-1.5">
-          <FileText className="w-3 h-3 text-zinc-400 dark:text-zinc-500 mt-0.5 flex-shrink-0" />
-          <div className="min-w-0">
-            <span
-              className="text-[11px] font-mono text-zinc-500 dark:text-zinc-400 break-all"
-              title={s.document_path}
-            >
-              {s.document_path.length > 60
-                ? s.document_path.slice(0, 57) + "\u2026"
-                : s.document_path}
-            </span>
-            {s.excerpt && (
-              <p className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-0.5 italic leading-relaxed">
-                &ldquo;{s.excerpt}&rdquo;
-              </p>
-            )}
+      {sources.map((s, i) => {
+        const label = (
+          <>
+            <FileText className="w-3 h-3 text-zinc-400 dark:text-zinc-500 mt-0.5 flex-shrink-0" />
+            <div className="min-w-0 flex-1">
+              <span
+                className={`text-[11px] font-mono break-all leading-relaxed ${
+                  s.source_url
+                    ? "text-[var(--color-accent)] dark:text-[var(--color-accent-dark)] group-hover:underline"
+                    : "text-zinc-500 dark:text-zinc-400"
+                }`}
+              >
+                {s.document_path}
+              </span>
+              {s.excerpt && (
+                <p className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-0.5 italic leading-relaxed">
+                  &ldquo;{s.excerpt}&rdquo;
+                </p>
+              )}
+            </div>
+          </>
+        );
+
+        return s.source_url ? (
+          <a
+            key={i}
+            href={s.source_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-start gap-1.5 group"
+          >
+            {label}
+          </a>
+        ) : (
+          <div key={i} className="flex items-start gap-1.5">
+            {label}
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -120,24 +204,31 @@ function DependencyGroup({
 }
 
 function SourceCard({ source }: { source: SourceDoc }) {
-  return (
-    <div
-      className={`p-3 rounded-lg border transition-colors ${
-        source.is_stale
-          ? "border-amber-200/60 bg-amber-50/30 dark:border-amber-700/30 dark:bg-amber-950/10"
-          : "border-zinc-200/60 bg-white dark:border-zinc-700/40 dark:bg-zinc-800/30"
-      }`}
-    >
+  const classes = `p-3 rounded-lg border transition-colors ${
+    source.is_stale
+      ? "border-amber-200/60 bg-amber-50/30 dark:border-amber-700/30 dark:bg-amber-950/10"
+      : "border-zinc-200/60 bg-white dark:border-zinc-700/40 dark:bg-zinc-800/30"
+  } ${source.source_url ? "hover:border-[var(--color-accent)]/50 dark:hover:border-[var(--color-accent-dark)]/50 cursor-pointer" : ""}`;
+
+  const body = (
+    <>
       <div className="flex items-start gap-2">
         {source.is_stale && (
           <AlertTriangle className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />
         )}
         <span
-          className="text-[12px] font-mono text-zinc-700 dark:text-zinc-300 break-all leading-snug"
+          className={`text-[12px] font-mono break-all leading-snug ${
+            source.source_url
+              ? "text-[var(--color-accent)] dark:text-[var(--color-accent-dark)]"
+              : "text-zinc-700 dark:text-zinc-300"
+          }`}
           title={source.path}
         >
           {source.path}
         </span>
+        {source.source_url && (
+          <ExternalLink className="w-3 h-3 text-zinc-400 dark:text-zinc-500 mt-1 flex-shrink-0" />
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-2 mt-2">
         <Badge variant="neutral" size="sm">
@@ -168,7 +259,20 @@ function SourceCard({ source }: { source: SourceDoc }) {
           ))}
         </div>
       )}
-    </div>
+    </>
+  );
+
+  return source.source_url ? (
+    <a
+      href={source.source_url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={`block ${classes}`}
+    >
+      {body}
+    </a>
+  ) : (
+    <div className={classes}>{body}</div>
   );
 }
 
@@ -362,6 +466,18 @@ export function AnalyzeRunPage() {
     ((deps.blocking?.length || 0) > 0 ||
       (deps.impacted?.length || 0) > 0 ||
       (deps.informational?.length || 0) > 0);
+
+  // One map of every known doc path -> its web URL. The narrative linkifier
+  // uses this to turn inline path references into anchor tags without
+  // requiring structured citations from the LLM.
+  const urlByPath = useMemo<Record<string, string>>(() => {
+    if (!report) return {};
+    const map: Record<string, string> = {};
+    for (const s of report.all_sources) {
+      if (s.source_url) map[s.path] = s.source_url;
+    }
+    return map;
+  }, [report]);
 
   async function handleDownloadPdf() {
     if (!report) return;
@@ -565,9 +681,10 @@ export function AnalyzeRunPage() {
             <CollapsibleSection title="Team Routing" icon={<Users className="w-3 h-3" />} defaultOpen={true} count={teamsCount}>
               <div className="space-y-4">
                 {report.team_routing_narrative && (
-                  <p className="text-[12px] text-zinc-600 dark:text-zinc-400 leading-relaxed">
-                    {report.team_routing_narrative}
-                  </p>
+                  <Narrative
+                    text={report.team_routing_narrative}
+                    urlByPath={urlByPath}
+                  />
                 )}
                 <div>
                   <div className="flex items-center gap-2 mb-1">
@@ -714,15 +831,38 @@ export function AnalyzeRunPage() {
                           </Badge>
                         </td>
                         <td className="py-3 pr-4 text-zinc-600 dark:text-zinc-400 leading-relaxed">
-                          <div>{row.why_involved || "-"}</div>
+                          <div>
+                            {row.why_involved
+                              ? linkifyNarrative(row.why_involved, urlByPath)
+                              : "-"}
+                          </div>
                           {row.evidence.length > 0 && (
-                            <div className="mt-1 text-[10px] font-mono text-zinc-400 dark:text-zinc-500 break-all">
-                              {row.evidence.slice(0, 2).join(" • ")}
+                            <div className="mt-1 text-[10px] flex flex-wrap gap-x-2 gap-y-1">
+                              {row.evidence.slice(0, 4).map((ev, i) =>
+                                urlByPath[ev] ? (
+                                  <a
+                                    key={i}
+                                    href={urlByPath[ev]}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="font-mono text-[var(--color-accent)] dark:text-[var(--color-accent-dark)] hover:underline break-all"
+                                  >
+                                    {ev}
+                                  </a>
+                                ) : (
+                                  <span
+                                    key={i}
+                                    className="font-mono text-zinc-400 dark:text-zinc-500 break-all"
+                                  >
+                                    {ev}
+                                  </span>
+                                ),
+                              )}
                             </div>
                           )}
                         </td>
                         <td className="py-3 text-zinc-600 dark:text-zinc-400 leading-relaxed">
-                          {row.blocker || "-"}
+                          {row.blocker ? linkifyNarrative(row.blocker, urlByPath) : "-"}
                         </td>
                       </tr>
                     ))}
@@ -739,9 +879,11 @@ export function AnalyzeRunPage() {
                 These are service-to-service relationships around the in-scope services.
               </p>
               {report.dependency_narrative && (
-                <p className="text-[12px] text-zinc-600 dark:text-zinc-400 leading-relaxed mb-4">
-                  {report.dependency_narrative}
-                </p>
+                <Narrative
+                  text={report.dependency_narrative}
+                  urlByPath={urlByPath}
+                  className="text-[12px] text-zinc-600 dark:text-zinc-400 leading-relaxed mb-4"
+                />
               )}
               <DependencyGroup
                 label="Blocking Dependencies"
@@ -763,9 +905,11 @@ export function AnalyzeRunPage() {
             report.risk_assessment.risks.length > 0 && (
               <CollapsibleSection title="Risk Assessment" icon={<Shield className="w-3 h-3" />} defaultOpen={true} count={report.risk_assessment.risks.length}>
                 {report.risk_narrative && (
-                  <p className="text-[12px] text-zinc-600 dark:text-zinc-400 leading-relaxed mb-3">
-                    {report.risk_narrative}
-                  </p>
+                  <Narrative
+                    text={report.risk_narrative}
+                    urlByPath={urlByPath}
+                    className="text-[12px] text-zinc-600 dark:text-zinc-400 leading-relaxed mb-3"
+                  />
                 )}
                 <div>
                   {report.risk_assessment.risks.map((risk, i) => (
@@ -780,9 +924,11 @@ export function AnalyzeRunPage() {
             report.effort_estimate.breakdown.length > 0 && (
               <CollapsibleSection title="Effort Breakdown" icon={<Gauge className="w-3 h-3" />} defaultOpen={false}>
                 {report.effort_narrative && (
-                  <p className="text-[12px] text-zinc-600 dark:text-zinc-400 leading-relaxed mb-4">
-                    {report.effort_narrative}
-                  </p>
+                  <Narrative
+                    text={report.effort_narrative}
+                    urlByPath={urlByPath}
+                    className="text-[12px] text-zinc-600 dark:text-zinc-400 leading-relaxed mb-4"
+                  />
                 )}
                 <div className="overflow-x-auto">
                   <table className="w-full text-[12px]">
@@ -974,9 +1120,21 @@ export function AnalyzeRunPage() {
                           <Badge variant="success" size="sm">
                             {claim.confidence}
                           </Badge>
-                          <span className="text-[11px] font-mono text-zinc-400 dark:text-zinc-500 break-all">
-                            {claim.supporting_doc}
-                          </span>
+                          {urlByPath[claim.supporting_doc] ? (
+                            <a
+                              href={urlByPath[claim.supporting_doc]}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[11px] font-mono text-[var(--color-accent)] dark:text-[var(--color-accent-dark)] hover:underline break-all inline-flex items-center gap-1"
+                            >
+                              {claim.supporting_doc}
+                              <ExternalLink className="w-3 h-3 flex-shrink-0" />
+                            </a>
+                          ) : (
+                            <span className="text-[11px] font-mono text-zinc-400 dark:text-zinc-500 break-all">
+                              {claim.supporting_doc}
+                            </span>
+                          )}
                         </div>
                         <p className="text-[12px] text-zinc-700 dark:text-zinc-300">
                           {claim.claim}
