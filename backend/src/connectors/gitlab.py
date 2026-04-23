@@ -89,9 +89,17 @@ class GitLabConnector(Connector):
         super().__init__(source)
 
         base_url = source.config.get("base_url") or settings.gitlab_base_url
+        # Per-source token takes precedence (lets operators override for a
+        # specific org/group that needs a different PAT); otherwise we fall
+        # back to the server-wide service-account token. The UI no longer
+        # collects a per-source token, so this is the default path.
+        token = source.token or settings.gitlab_token or ""
         headers = {"User-Agent": "prism-ingest/0.1"}
-        if source.token:
-            headers["PRIVATE-TOKEN"] = source.token
+        if token:
+            headers["PRIVATE-TOKEN"] = token
+        # Keep the effective token on the instance so search_projects /
+        # list_documents can still check whether we have auth.
+        self._effective_token = token
 
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
@@ -351,13 +359,15 @@ class GitLabConnector(Connector):
         """
         params: list[str] = [
             "simple=true",
-            "order_by=last_activity_at",
+            # Intentionally no order_by -- gitlab.com returns a 500 when
+            # ``simple=true`` is combined with ``order_by=last_activity_at``
+            # for the membership listing. GitLab's default ordering is fine.
             f"per_page={max(1, min(per_page, 100))}",
             f"page={max(page, 1)}",
         ]
         if query:
             params.append(f"search={quote(query, safe='')}")
-        if self.source.token:
+        if self._effective_token:
             params.append("membership=true")
         endpoint = f"/projects?{'&'.join(params)}"
 

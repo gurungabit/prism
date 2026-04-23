@@ -55,15 +55,15 @@ export function NewSourcePage() {
 
   const [kind, setKind] = useState<SourceKind>("gitlab");
   const [sourceName, setSourceName] = useState("");
-  const [token, setToken] = useState("");
 
-  // GitLab config
+  // GitLab config. Token + base URL moved to backend settings
+  // (PRISM_GITLAB_TOKEN / PRISM_GITLAB_BASE_URL); the wizard no longer
+  // collects them per-source.
   const [gitlabMode, setGitlabMode] = useState<"project" | "group">("project");
   const [projectPath, setProjectPath] = useState("");
   const [groupPath, setGroupPath] = useState("");
   const [gitRef, setGitRef] = useState("");
   const [includeSubgroups, setIncludeSubgroups] = useState(true);
-  const [baseUrl, setBaseUrl] = useState("");
 
   // Path-based connectors (stubs in Phase 1)
   const [localPath, setLocalPath] = useState("");
@@ -90,7 +90,6 @@ export function NewSourcePage() {
   const builtConfig = useMemo(() => {
     if (kind === "gitlab") {
       const base: Record<string, unknown> = {};
-      if (baseUrl.trim()) base.base_url = baseUrl.trim();
       if (gitlabMode === "project") {
         base.project_path = projectPath.trim();
         if (gitRef.trim()) base.ref = gitRef.trim();
@@ -101,7 +100,7 @@ export function NewSourcePage() {
       return base;
     }
     return { path: localPath.trim() };
-  }, [kind, baseUrl, gitlabMode, projectPath, groupPath, gitRef, includeSubgroups, localPath]);
+  }, [kind, gitlabMode, projectPath, groupPath, gitRef, includeSubgroups, localPath]);
 
   // Derive a sensible default name once the user has config + scope.
   useEffect(() => {
@@ -122,10 +121,11 @@ export function NewSourcePage() {
   async function runValidate() {
     setGlobalError(null);
     try {
+      // Token no longer collected in the UI -- the backend injects its
+      // service-account token when the request omits one.
       const result = await validate.mutateAsync({
         kind,
         config: builtConfig,
-        token: token.trim() || undefined,
       });
       return result;
     } catch (err) {
@@ -147,7 +147,6 @@ export function NewSourcePage() {
         kind,
         name: sourceName.trim(),
         config: builtConfig,
-        token: token.trim() || undefined,
       });
       await triggerIngest.mutateAsync({ sourceId: created.id });
       navigate({ to: "/sources/$sourceId", params: { sourceId: created.id } });
@@ -369,28 +368,11 @@ export function NewSourcePage() {
                   Whole group
                 </label>
               </div>
-              <Input
-                label="Personal access token"
-                type="password"
-                placeholder="glpat-… (read_api + read_repository scopes)"
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-              />
-
-              <Input
-                label="Base URL (optional)"
-                placeholder="https://gitlab.com/api/v4 — change for self-hosted"
-                value={baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)}
-              />
-
               {gitlabMode === "project" ? (
                 <>
                   <GitlabProjectSelect
                     value={projectPath}
                     onChange={setProjectPath}
-                    token={token}
-                    baseUrl={baseUrl}
                   />
                   <Input
                     label="Ref (optional)"
