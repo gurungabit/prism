@@ -1,7 +1,9 @@
 import { useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { Network } from "lucide-react";
+import { Building2, ChevronRight, Network } from "lucide-react";
 
+import { Button } from "../components/shared/Button";
 import { Skeleton } from "../components/shared/Skeleton";
 import { EmptyState } from "../components/shared/EmptyState";
 import { OrganizationGraph } from "../components/organization/OrganizationGraph";
@@ -9,7 +11,7 @@ import {
   NodeDetailPanel,
   type SelectedNode,
 } from "../components/organization/NodeDetailPanel";
-import { getOrganizationGraph } from "../lib/api";
+import { getOrganizationGraph, type OrganizationGraphResponse } from "../lib/api";
 
 export function OrganizationPage() {
   const graph = useQuery({
@@ -65,6 +67,8 @@ export function OrganizationPage() {
         </p>
       </div>
 
+      <OrgSummaryCards data={graph.data} />
+
       <OrganizationGraph data={graph.data} onSelect={setSelected} />
 
       <NodeDetailPanel
@@ -89,6 +93,49 @@ export function OrganizationPage() {
           Service dependency
         </span>
       </div>
+    </div>
+  );
+}
+
+// One row per org, showing team + service + source counts with a Manage
+// button -- mirrors the same card that appears on the Dashboard. Useful
+// shortcut on the Organization page so users don't have to interact with
+// the graph just to open the catalog detail pages.
+function OrgSummaryCards({ data }: { data: OrganizationGraphResponse }) {
+  return (
+    <div className="space-y-2">
+      {data.orgs.map((org) => {
+        const teamsForOrg = data.teams.filter((t) => t.org_id === org.id);
+        const teamIds = new Set(teamsForOrg.map((t) => t.id));
+        const servicesForOrg = data.services.filter((s) => teamIds.has(s.team_id));
+        return (
+          <div
+            key={org.id}
+            className="flex items-center justify-between border border-zinc-200/80 dark:border-zinc-700/40 rounded-lg px-4 py-3"
+          >
+            <div className="flex items-center gap-3">
+              <Building2 className="w-4 h-4 text-zinc-400 dark:text-zinc-500" />
+              <div>
+                <div className="text-[13px] font-medium text-zinc-900 dark:text-zinc-100">
+                  {org.name}
+                </div>
+                <div className="text-[11px] text-zinc-400 dark:text-zinc-500">
+                  {teamsForOrg.length} teams · {servicesForOrg.length} services
+                </div>
+              </div>
+            </div>
+            <Link to="/orgs/$orgId" params={{ orgId: org.id }}>
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<ChevronRight className="w-3.5 h-3.5" />}
+              >
+                Manage
+              </Button>
+            </Link>
+          </div>
+        );
+      })}
     </div>
   );
 }

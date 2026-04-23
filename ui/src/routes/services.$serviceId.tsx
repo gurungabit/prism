@@ -48,9 +48,9 @@ export function ServiceDetailPage() {
             <Link
               to="/teams/$teamId"
               params={{ teamId: team.data.id }}
-              className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-600 dark:text-zinc-500 dark:hover:text-zinc-300"
+              className="inline-flex items-center gap-1.5 text-[13px] text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
             >
-              <ArrowLeft className="w-3 h-3" /> {team.data.name}
+              <ArrowLeft className="w-3.5 h-3.5" /> {team.data.name}
             </Link>
           )}
           <h1 className="text-lg tracking-tight text-zinc-900 dark:text-zinc-100 mt-1">
