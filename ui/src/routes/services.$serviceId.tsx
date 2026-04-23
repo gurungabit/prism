@@ -6,12 +6,11 @@ import { Skeleton } from "../components/shared/Skeleton";
 import { EmptyState } from "../components/shared/EmptyState";
 import { Badge } from "../components/shared/Badge";
 import { DeclaredSourceRow } from "../components/sources/DeclaredSourceRow";
-import { useDeclaredSources, useServiceById, useTeamById } from "../hooks/useCatalog";
+import { useDeclaredSources, useServiceById } from "../hooks/useCatalog";
 
 export function ServiceDetailPage() {
   const { serviceId } = useParams({ strict: false }) as { serviceId: string };
   const service = useServiceById(serviceId);
-  const team = useTeamById(service.data?.team_id);
   const serviceSources = useDeclaredSources({ serviceId });
 
   const sourceList = serviceSources.data?.sources ?? [];
@@ -44,15 +43,13 @@ export function ServiceDetailPage() {
     <div className="max-w-[960px] mx-auto px-6 py-8 space-y-8">
       <div className="flex items-center justify-between">
         <div>
-          {team.data && (
-            <Link
-              to="/teams/$teamId"
-              params={{ teamId: team.data.id }}
-              className="inline-flex items-center gap-1.5 text-[13px] text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
-            >
-              <ArrowLeft className="w-3.5 h-3.5" /> {team.data.name}
-            </Link>
-          )}
+          <button
+            type="button"
+            onClick={() => window.history.back()}
+            className="inline-flex items-center gap-1.5 text-[13px] text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" /> Back
+          </button>
           <h1 className="text-lg tracking-tight text-zinc-900 dark:text-zinc-100 mt-1">
             {service.data.name}
           </h1>

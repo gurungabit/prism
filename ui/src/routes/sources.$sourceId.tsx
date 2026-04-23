@@ -69,12 +69,13 @@ export function SourceDetailPage() {
     <div className="max-w-[960px] mx-auto px-6 py-8 space-y-8">
       <div className="flex items-center justify-between">
         <div>
-          <Link
-            to="/sources"
+          <button
+            type="button"
+            onClick={() => window.history.back()}
             className="inline-flex items-center gap-1.5 text-[13px] text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
           >
-            <ArrowLeft className="w-3.5 h-3.5" /> Sources
-          </Link>
+            <ArrowLeft className="w-3.5 h-3.5" /> Back
+          </button>
           <div className="flex items-center gap-2 mt-1">
             <Plug className="w-4 h-4 text-zinc-400 dark:text-zinc-500" />
             <h1 className="text-lg tracking-tight text-zinc-900 dark:text-zinc-100">
