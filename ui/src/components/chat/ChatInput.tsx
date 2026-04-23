@@ -18,6 +18,13 @@ export function ChatInput({
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
+    // Empty: drop the inline height so the ``rows={1}`` default kicks back
+    // in. Without this the textarea stays at whatever size the previous
+    // content pushed it to.
+    if (!value) {
+      el.style.height = "";
+      return;
+    }
     el.style.height = "auto";
     el.style.height = Math.min(el.scrollHeight, 200) + "px";
   }, [value]);
