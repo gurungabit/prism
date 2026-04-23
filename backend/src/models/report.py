@@ -68,6 +68,8 @@ class TeamCandidate(BaseModel):
 
 class TeamRouting(BaseModel):
     primary_team: TeamCandidate
+    # Legacy field kept for JSON compatibility with pre-blast-radius stored
+    # reports; new reports leave this empty and use team_blast_radius instead.
     supporting_teams: list[TeamCandidate] = []
 
 
@@ -91,6 +93,25 @@ class DependencyTree(BaseModel):
     blocking: list[DependencyEdge] = []
     impacted: list[DependencyEdge] = []
     informational: list[DependencyEdge] = []
+
+
+class TeamDependencyEdge(BaseModel):
+    """Team-to-team relationship relative to the primary team."""
+
+    team_name: str
+    relationship: Literal["blocking", "impacted", "informational"] = "impacted"
+    reason: str = ""
+    evidence_services: list[str] = []
+    sources: list[Citation] = []
+
+
+class TeamBlastRadius(BaseModel):
+    """Blast radius of a requirement in team terms. ``upstream`` teams must be
+    coordinated with before/during the work; ``downstream`` teams are
+    affected by the output and may need to adapt."""
+
+    upstream: list[TeamDependencyEdge] = []
+    downstream: list[TeamDependencyEdge] = []
 
 
 class RiskItem(BaseModel):
@@ -209,6 +230,9 @@ class PRISMReport(BaseModel):
     caveats: list[str] = []
     team_routing: TeamRouting | None = None
     affected_services: list[AffectedService] = []
+    # Team blast radius: who the primary team coordinates with (upstream)
+    # and who consumes / is impacted by their output (downstream).
+    team_blast_radius: TeamBlastRadius = TeamBlastRadius()
     dependencies: DependencyTree = DependencyTree()
     risk_assessment: RiskAssessment | None = None
     effort_estimate: EffortEstimate | None = None

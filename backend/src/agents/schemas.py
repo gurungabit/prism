@@ -6,8 +6,11 @@ from pydantic import BaseModel
 
 
 class RouterOutput(BaseModel):
+    """Router picks a single primary owner. Team-to-team relationships live on
+    ``DependencyOutput.upstream_teams`` / ``downstream_teams`` now -- the old
+    ``supporting_teams`` field was redundant with team dependencies."""
+
     primary_team: TeamScore
-    supporting_teams: list[TeamScore] = []
     affected_services: list[ServiceImpact] = []
     reasoning: str = ""
 
@@ -29,10 +32,39 @@ class ServiceImpact(BaseModel):
 
 
 class DependencyOutput(BaseModel):
+    """Team-first dependency analysis.
+
+    ``upstream_teams`` and ``downstream_teams`` are the first-class output --
+    who the primary team needs to coordinate with, in what direction.
+    The service-level lists (``blocking``/``impacted``/``informational``)
+    are the secondary layer: which packages/services/CI paths create those
+    team relationships.
+    """
+
+    upstream_teams: list[TeamDependency] = []
+    downstream_teams: list[TeamDependency] = []
     blocking: list[DependencyItem] = []
     impacted: list[DependencyItem] = []
     informational: list[DependencyItem] = []
     reasoning: str = ""
+
+
+class TeamDependency(BaseModel):
+    """A team-to-team dependency relative to the primary team.
+
+    ``upstream`` direction means the primary team depends on this team.
+    ``downstream`` means this team depends on / will be impacted by the
+    primary team's work.
+    """
+
+    team_name: str
+    relationship: Literal["blocking", "impacted", "informational"] = "impacted"
+    reason: str = ""
+    # Specific services/packages/resources that make this team relevant.
+    # The UI renders these on the edge detail panel so a reader can see
+    # "why is security-team on the graph" at a glance.
+    evidence_services: list[str] = []
+    source_docs: list[str] = []
 
 
 class DependencyItem(BaseModel):

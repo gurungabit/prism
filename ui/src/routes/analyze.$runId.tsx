@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import type { ThreadTurn } from "../lib/api";
 import { ChatInput } from "../components/chat/ChatInput";
+import { BlastRadiusGraph } from "../components/analysis/BlastRadiusGraph";
 import { useAnalysisStream } from "../hooks/useAnalysisStream";
 import { TimelineStep } from "../components/analysis/AgentCard";
 import { PipelineDiagram } from "../components/analysis/PipelineDiagram";
@@ -904,11 +905,39 @@ export function SingleRunPanel({
             </CollapsibleSection>
           )}
 
-          {/* ─── Dependencies ────────────────────────────── */}
-          {hasAnyDeps && deps && (
-            <CollapsibleSection title="Dependencies" icon={<GitBranch className="w-3 h-3" />} defaultOpen={false} count={(deps.blocking?.length || 0) + (deps.impacted?.length || 0) + (deps.informational?.length || 0)}>
+          {/* ─── Team blast radius ───────────────────────── */}
+          {report.team_blast_radius &&
+            (report.team_blast_radius.upstream.length > 0 ||
+              report.team_blast_radius.downstream.length > 0) && (
+            <CollapsibleSection
+              title="Team Blast Radius"
+              icon={<Users className="w-3 h-3" />}
+              defaultOpen={true}
+              count={
+                report.team_blast_radius.upstream.length +
+                report.team_blast_radius.downstream.length
+              }
+            >
               <p className="text-[12px] text-zinc-600 dark:text-zinc-400 leading-relaxed mb-3">
-                These are service-to-service relationships around the in-scope services.
+                Which teams the primary team needs to coordinate with, and who downstream is
+                impacted. Click an edge to see the evidence.
+              </p>
+              <BlastRadiusGraph
+                primaryTeamName={
+                  report.team_routing?.primary_team.name ?? "Primary"
+                }
+                upstream={report.team_blast_radius.upstream}
+                downstream={report.team_blast_radius.downstream}
+                urlByPath={urlByPath}
+              />
+            </CollapsibleSection>
+          )}
+
+          {/* ─── Dependencies (service-level, secondary) ─── */}
+          {hasAnyDeps && deps && (
+            <CollapsibleSection title="Service Dependencies" icon={<GitBranch className="w-3 h-3" />} defaultOpen={false} count={(deps.blocking?.length || 0) + (deps.impacted?.length || 0) + (deps.informational?.length || 0)}>
+              <p className="text-[12px] text-zinc-600 dark:text-zinc-400 leading-relaxed mb-3">
+                Service-to-service / package-level edges that back the team blast radius above.
               </p>
               {report.dependency_narrative && (
                 <Narrative

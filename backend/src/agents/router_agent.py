@@ -78,7 +78,6 @@ async def router_agent(state: dict[str, Any]) -> dict[str, Any]:
 
         if on_step:
             try:
-                supporting_names = [t.name for t in routing.supporting_teams[:5]]
                 services_found = [s.name for s in routing.affected_services[:8]]
                 conf = routing.primary_team.confidence
                 conf_pct = f"{conf:.0%}" if conf <= 1.0 else f"{conf:.0f}%"
@@ -90,7 +89,6 @@ async def router_agent(state: dict[str, Any]) -> dict[str, Any]:
                         "data": {
                             "primary_team": routing.primary_team.name,
                             "confidence": conf_pct,
-                            "supporting_teams": supporting_names,
                             "affected_services": services_found,
                             "reasoning": routing.reasoning or "",
                         },

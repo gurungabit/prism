@@ -74,6 +74,21 @@ export const DependencyTreeSchema = z.object({
   informational: z.array(DependencyEdgeSchema).default([]),
 });
 
+// ── Team blast radius ─────────────────────────────────
+
+export const TeamDependencyEdgeSchema = z.object({
+  team_name: z.string(),
+  relationship: z.enum(["blocking", "impacted", "informational"]).default("impacted"),
+  reason: z.string().default(""),
+  evidence_services: z.array(z.string()).default([]),
+  sources: z.array(CitationSchema).default([]),
+});
+
+export const TeamBlastRadiusSchema = z.object({
+  upstream: z.array(TeamDependencyEdgeSchema).default([]),
+  downstream: z.array(TeamDependencyEdgeSchema).default([]),
+});
+
 // ── Risk ──────────────────────────────────────────────
 
 const RiskCategory = z.enum([
@@ -193,6 +208,7 @@ export const PRISMReportSchema = z.object({
   caveats: z.array(z.string()).default([]),
   team_routing: TeamRoutingSchema.nullable().default(null),
   affected_services: z.array(AffectedServiceSchema).default([]),
+  team_blast_radius: TeamBlastRadiusSchema.default({}),
   dependencies: DependencyTreeSchema.default({}),
   risk_assessment: RiskAssessmentSchema.nullable().default(null),
   effort_estimate: EffortEstimateSchema.nullable().default(null),
