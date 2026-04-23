@@ -118,9 +118,7 @@ def _extract_teams_text(routing_data: AgentResult | None) -> str:
         return "No teams identified"
     data = routing_data.data if isinstance(routing_data.data, dict) else {}
     primary = data.get("primary_team", {})
-    supporting = data.get("supporting_teams", [])
-    teams = [primary] + supporting if primary else supporting
-    return json.dumps(teams, indent=2) if teams else "No teams identified"
+    return json.dumps([primary], indent=2) if primary else "No teams identified"
 
 
 def _detect_stale_sources(chunks: list[Chunk]) -> list[str]:

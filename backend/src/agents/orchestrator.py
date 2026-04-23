@@ -45,6 +45,8 @@ from src.models.report import (
     CoverageReport,
     DependencyEdge,
     DependencyTree,
+    TeamBlastRadius,
+    TeamDependencyEdge,
     EffortBreakdown,
     EffortEstimate,
     ImpactMatrixRow,
@@ -649,16 +651,9 @@ def _build_report(
                 justification=primary.get("justification", ""),
                 sources=[_cite(s) for s in primary.get("key_sources", [])],
             ),
-            supporting_teams=[
-                TeamCandidate(
-                    name=t.get("name", ""),
-                    confidence=t.get("confidence", 0.0),
-                    justification=t.get("justification", ""),
-                    role=t.get("role", "supporting"),
-                    sources=[_cite(s) for s in t.get("key_sources", [])],
-                )
-                for t in rd.get("supporting_teams", [])
-            ],
+            # supporting_teams is legacy -- router no longer emits it.
+            # Blast radius (team dependencies) lives on ``team_blast_radius``.
+            supporting_teams=[],
         )
 
         report.affected_services = [
@@ -674,6 +669,33 @@ def _build_report(
 
     dd = _result_data(dependencies)
     if dd:
+        # Primary output: team blast radius (who the primary team coordinates
+        # with, in which direction).
+        report.team_blast_radius = TeamBlastRadius(
+            upstream=[
+                TeamDependencyEdge(
+                    team_name=t.get("team_name", ""),
+                    relationship=t.get("relationship", "impacted"),
+                    reason=t.get("reason", ""),
+                    evidence_services=t.get("evidence_services", []) or [],
+                    sources=[_cite(s) for s in t.get("source_docs", [])],
+                )
+                for t in dd.get("upstream_teams", [])
+                if t.get("team_name")
+            ],
+            downstream=[
+                TeamDependencyEdge(
+                    team_name=t.get("team_name", ""),
+                    relationship=t.get("relationship", "impacted"),
+                    reason=t.get("reason", ""),
+                    evidence_services=t.get("evidence_services", []) or [],
+                    sources=[_cite(s) for s in t.get("source_docs", [])],
+                )
+                for t in dd.get("downstream_teams", [])
+                if t.get("team_name")
+            ],
+        )
+        # Secondary output: service-level edges (unchanged shape).
         report.dependencies = DependencyTree(
             blocking=[
                 DependencyEdge(
@@ -879,11 +901,9 @@ def _build_impact_matrix(report: PRISMReport) -> list[ImpactMatrixRow]:
     seen: set[tuple[str, str, str]] = set()
 
     primary_team = report.team_routing.primary_team if report.team_routing else None
-    supporting_teams = report.team_routing.supporting_teams if report.team_routing else []
-    confidence_by_team = {
-        team.name: _confidence_label(team.confidence)
-        for team in ([primary_team] if primary_team else []) + supporting_teams
-    }
+    confidence_by_team = {}
+    if primary_team:
+        confidence_by_team[primary_team.name] = _confidence_label(primary_team.confidence)
 
     blockers_by_service: dict[str, list[str]] = {}
     evidence_by_service: dict[str, list[str]] = {}
@@ -965,19 +985,29 @@ def _build_impact_matrix(report: PRISMReport) -> list[ImpactMatrixRow]:
                 + [citation.document_path for citation in primary_team.sources if citation.document_path],
             )
 
-        for team in supporting_teams:
-            if owner_team and team.name == owner_team:
-                continue
-            add_row(
-                team=team.name,
-                service=service.name,
-                role=team.role or "supporting",
-                why_involved=team.justification or why_involved,
-                confidence=_confidence_label(team.confidence),
-                blocker=blocker,
-                evidence=base_evidence
-                + [citation.document_path for citation in team.sources if citation.document_path],
-            )
+        # Team blast-radius entries: for each upstream/downstream team, if
+        # this service is in the team's evidence list, add a row. Same shape
+        # as the old supporting_teams loop, but the data comes from the new
+        # dependency output.
+        br = report.team_blast_radius
+        for direction, edges in (("upstream", br.upstream), ("downstream", br.downstream)):
+            for team_dep in edges:
+                if owner_team and team_dep.team_name == owner_team:
+                    continue
+                if team_dep.team_name == (primary_team.name if primary_team else ""):
+                    continue
+                if service.name not in team_dep.evidence_services:
+                    continue
+                add_row(
+                    team=team_dep.team_name,
+                    service=service.name,
+                    role=direction,
+                    why_involved=team_dep.reason or why_involved,
+                    confidence="high" if team_dep.relationship == "blocking" else "medium",
+                    blocker=blocker,
+                    evidence=base_evidence
+                    + [citation.document_path for citation in team_dep.sources if citation.document_path],
+                )
 
     for conflict in report.conflicts_detected:
         for claimant in conflict.claimed_by:
@@ -993,7 +1023,14 @@ def _build_impact_matrix(report: PRISMReport) -> list[ImpactMatrixRow]:
 
     rows.sort(
         key=lambda row: (
-            {"owner": 0, "primary": 1, "supporting": 2, "conflict": 3}.get(row.role, 4),
+            {
+                "owner": 0,
+                "primary": 1,
+                "upstream": 2,
+                "downstream": 3,
+                "supporting": 4,
+                "conflict": 5,
+            }.get(row.role, 6),
             row.team.lower(),
             row.service.lower(),
         )
