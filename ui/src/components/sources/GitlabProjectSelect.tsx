@@ -5,8 +5,6 @@ import { searchGitlabProjects, type GitLabProject } from "../../lib/api";
 interface Props {
   value: string;
   onChange: (path: string) => void;
-  token: string;
-  baseUrl: string;
   label?: string;
   placeholder?: string;
 }
@@ -16,8 +14,6 @@ const PER_PAGE = 20;
 export function GitlabProjectSelect({
   value,
   onChange,
-  token,
-  baseUrl,
   label = "Project path",
   placeholder = "Search projects…",
 }: Props) {
@@ -55,21 +51,16 @@ export function GitlabProjectSelect({
     setHasMore(false);
   }, [debounced, open]);
 
-  // Fetch page data. Token is required — without it GitLab.com returns the
-  // public project firehose, which is noise.
+  // Fetch page data. The backend falls back to its service-account token
+  // when the request omits one, so the UI doesn't need to collect or
+  // forward credentials any more.
   useEffect(() => {
     if (!open) return;
-    if (!token.trim()) {
-      setError("Enter a personal access token above to search.");
-      return;
-    }
     setError(null);
     setLoading(true);
     let cancelled = false;
 
     searchGitlabProjects({
-      base_url: baseUrl.trim() || undefined,
-      token: token.trim(),
       q: debounced.trim(),
       page,
       per_page: PER_PAGE,
@@ -90,7 +81,7 @@ export function GitlabProjectSelect({
     return () => {
       cancelled = true;
     };
-  }, [open, debounced, page, token, baseUrl]);
+  }, [open, debounced, page]);
 
   // Close on outside click.
   useEffect(() => {
@@ -114,12 +105,11 @@ export function GitlabProjectSelect({
   const showDropdown = open && (loading || results.length > 0 || error);
 
   const helperText = useMemo(() => {
-    if (!token.trim()) return "Token required to search — you can also type the path manually.";
     if (loading && results.length === 0) return "Searching…";
     if (error) return error;
     if (results.length === 0 && debounced.trim()) return "No projects found.";
     return null;
-  }, [token, loading, results.length, error, debounced]);
+  }, [loading, results.length, error, debounced]);
 
   return (
     <div className="space-y-1.5" ref={containerRef}>

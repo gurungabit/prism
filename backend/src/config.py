@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     # GitLab connector defaults. Overridable per-source via ``config.base_url``.
     # Self-hosted instances set PRISM_GITLAB_BASE_URL at deploy time.
     gitlab_base_url: str = "https://gitlab.com/api/v4"
+    # Server-wide PAT / service-account token. Used when a source doesn't
+    # carry its own token (see ``GitLabConnector`` fallback). Set via
+    # ``PRISM_GITLAB_TOKEN`` at deploy time. Kept as a string rather than
+    # Secret so it can be passed through httpx headers directly.
+    gitlab_token: str = ""
     gitlab_request_timeout_seconds: float = 30.0
     # Hard cap on docs fetched per source per ingest run. Prevents a run-away
     # group with thousands of projects from swamping the pipeline in Phase 1.
