@@ -71,9 +71,9 @@ export function SourceDetailPage() {
         <div>
           <Link
             to="/sources"
-            className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-600 dark:text-zinc-500 dark:hover:text-zinc-300"
+            className="inline-flex items-center gap-1.5 text-[13px] text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
           >
-            <ArrowLeft className="w-3 h-3" /> Sources
+            <ArrowLeft className="w-3.5 h-3.5" /> Sources
           </Link>
           <div className="flex items-center gap-2 mt-1">
             <Plug className="w-4 h-4 text-zinc-400 dark:text-zinc-500" />
