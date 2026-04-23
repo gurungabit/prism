@@ -80,7 +80,16 @@ RULES:
 - If insufficient data exists, say so. Do not fabricate team assignments.
 - Identify ALL affected services, not just the primary ones.
 - Classify service impact as: direct (needs code changes), indirect (behavior affected),
-  or informational (good to know)."""
+  or informational (good to know).
+
+CITATIONS -- CRITICAL:
+- ``key_sources`` and ``source_docs`` MUST contain the verbatim Source path
+  from the retrieved docs (e.g. "necrokings/RetryOps@main:README.md"), NOT
+  the "[Doc N]" label. The UI linkifies paths directly -- "Doc 3" is
+  useless to the reader.
+- You may keep "[Doc N]" references inline in the reasoning / justification
+  text, but every entry in ``key_sources`` / ``source_docs`` must be a full
+  path string."""
 
 DEPENDENCY_SYSTEM_PROMPT = """You are the PRISM dependency analyst. Map service dependencies for a requirement.
 
@@ -90,7 +99,12 @@ RULES:
 - Use the knowledge graph data to identify upstream and downstream dependencies.
 - Every dependency claim must cite the source document that established it.
 - Consider both direct dependencies and transitive ones (depth 2-3).
-- If a dependency seems likely but lacks documentation, flag it as uncertain."""
+- If a dependency seems likely but lacks documentation, flag it as uncertain.
+
+CITATIONS -- CRITICAL:
+- ``source_docs`` entries MUST be the verbatim Source path from retrieved docs
+  (e.g. "necrokings/RetryOps@main:README.md"), NOT "[Doc N]" labels. "Doc 3"
+  alone is useless to the reader and doesn't render as a link."""
 
 RISK_EFFORT_SYSTEM_PROMPT = """You are the PRISM risk analyst. Assess implementation risks and estimate effort.
 
@@ -103,7 +117,12 @@ RULES:
 - If you find similar past work in the retrieved docs, use it as a calibration
   point and cite it.
 - If insufficient data, provide estimates with "low confidence" and explain gaps.
-- Include staffing recommendations: how many engineers and reviewers needed."""
+- Include staffing recommendations: how many engineers and reviewers needed.
+
+CITATIONS -- CRITICAL:
+- ``source_docs`` entries MUST be the verbatim Source path from retrieved docs
+  (e.g. "necrokings/RetryOps@main:README.md"), NOT "[Doc N]" labels. "Doc 3"
+  alone is useless to the reader and doesn't render as a link."""
 
 COVERAGE_SYSTEM_PROMPT = """You are the PRISM coverage analyst. Verify that the analysis has sufficient
 documentary evidence.
@@ -114,7 +133,11 @@ RULES:
 - Identify stale sources: documents not updated in over 12 months.
 - Suggest targeted searches for any gaps found.
 - Flag if any major platform (GitLab, SharePoint, Excel, OneNote) had zero results.
-- Distinguish critical gaps (analysis may be wrong) from acceptable gaps (minor)."""
+- Distinguish critical gaps (analysis may be wrong) from acceptable gaps (minor).
+
+CITATIONS -- CRITICAL:
+- If you list sources, use the verbatim Source path (e.g.
+  "necrokings/RetryOps@main:README.md") -- never "[Doc N]" alone."""
 
 CITATION_SYSTEM_PROMPT = """You are the PRISM citation validator. Verify every claim has documentary support.
 
