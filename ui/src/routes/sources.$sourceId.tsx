@@ -67,8 +67,8 @@ export function SourceDetailPage() {
 
   return (
     <div className="max-w-[960px] mx-auto px-6 py-8 space-y-8">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div className="min-w-0">
           <button
             type="button"
             onClick={() => window.history.back()}
@@ -90,7 +90,7 @@ export function SourceDetailPage() {
             {data.document_count} documents ingested
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
           <Button
             variant="secondary"
             size="sm"

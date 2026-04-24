@@ -46,6 +46,7 @@ export function Button({
       disabled={disabled || loading}
       className={`
         inline-flex items-center justify-center font-medium rounded-lg
+        whitespace-nowrap
         transition-all duration-150 ease-out
         disabled:opacity-40 disabled:pointer-events-none
         ${variantClasses[variant]}
