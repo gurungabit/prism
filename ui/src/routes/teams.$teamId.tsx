@@ -1,16 +1,16 @@
 import { useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
-import { ArrowLeft, Boxes, Plug, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, Boxes, Pencil, Plug, Plus, Trash2 } from "lucide-react";
 
 import { Button } from "../components/shared/Button";
-import { Input, Textarea } from "../components/shared/Input";
 import { Badge } from "../components/shared/Badge";
 import { Skeleton } from "../components/shared/Skeleton";
 import { EmptyState } from "../components/shared/EmptyState";
 import { useConfirm } from "../components/shared/ConfirmDialog";
 import { DeclaredSourceRow } from "../components/sources/DeclaredSourceRow";
+import { TeamForm } from "../components/catalog/TeamForm";
+import { ServiceForm } from "../components/catalog/ServiceForm";
 import {
-  useCreateService,
   useDeclaredSources,
   useDeleteService,
   useServicesForTeam,
@@ -22,15 +22,12 @@ export function TeamDetailPage() {
   const team = useTeamById(teamId);
   const services = useServicesForTeam(teamId);
   const teamSources = useDeclaredSources({ teamId });
-  const createService = useCreateService();
   const deleteService = useDeleteService();
   const confirm = useConfirm();
 
   const [showForm, setShowForm] = useState(false);
-  const [serviceName, setServiceName] = useState("");
-  const [serviceRepo, setServiceRepo] = useState("");
-  const [serviceDescription, setServiceDescription] = useState("");
-  const [formError, setFormError] = useState<string | null>(null);
+  const [editingTeam, setEditingTeam] = useState(false);
+  const [editingServiceId, setEditingServiceId] = useState<string | null>(null);
 
   const serviceList = services.data?.services ?? [];
   const teamSourceList = teamSources.data?.sources ?? [];
@@ -70,9 +67,19 @@ export function TeamDetailPage() {
           >
             <ArrowLeft className="w-3.5 h-3.5" /> Back
           </button>
-          <h1 className="text-lg tracking-tight text-zinc-900 dark:text-zinc-100 mt-1">
-            {team.data.name}
-          </h1>
+          <div className="flex items-center gap-2 mt-1">
+            <h1 className="text-lg tracking-tight text-zinc-900 dark:text-zinc-100">
+              {team.data.name}
+            </h1>
+            <button
+              type="button"
+              onClick={() => setEditingTeam((v) => !v)}
+              className="p-1 rounded text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+              aria-label="Edit team"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+          </div>
           {team.data.description && (
             <p className="text-[12px] text-zinc-500 dark:text-zinc-400 mt-1 max-w-xl">
               {team.data.description}
@@ -91,6 +98,19 @@ export function TeamDetailPage() {
         </div>
       </div>
 
+      {editingTeam && (
+        <TeamForm
+          mode="edit"
+          teamId={teamId}
+          initialValues={{
+            name: team.data.name,
+            description: team.data.description ?? "",
+          }}
+          onSuccess={() => setEditingTeam(false)}
+          onCancel={() => setEditingTeam(false)}
+        />
+      )}
+
       {/* Services */}
       <section className="space-y-3">
         <div className="flex items-center justify-between">
@@ -108,56 +128,12 @@ export function TeamDetailPage() {
         </div>
 
         {showForm && (
-          <form
-            className="space-y-3 border border-zinc-200 dark:border-zinc-700/40 rounded-lg p-4"
-            onSubmit={async (event) => {
-              event.preventDefault();
-              setFormError(null);
-              if (!serviceName.trim()) {
-                setFormError("Service name is required");
-                return;
-              }
-              try {
-                await createService.mutateAsync({
-                  teamId,
-                  body: {
-                    name: serviceName.trim(),
-                    repo_url: serviceRepo.trim(),
-                    description: serviceDescription.trim(),
-                  },
-                });
-                setServiceName("");
-                setServiceRepo("");
-                setServiceDescription("");
-                setShowForm(false);
-              } catch (err) {
-                setFormError(err instanceof Error ? err.message : "Failed to create service");
-              }
-            }}
-          >
-            <Input
-              label="Service name"
-              value={serviceName}
-              onChange={(e) => setServiceName(e.target.value)}
-              error={formError ?? undefined}
-              autoFocus
-            />
-            <Input
-              label="Repository URL"
-              placeholder="https://gitlab.com/..."
-              value={serviceRepo}
-              onChange={(e) => setServiceRepo(e.target.value)}
-            />
-            <Textarea
-              label="Description"
-              value={serviceDescription}
-              onChange={(e) => setServiceDescription(e.target.value)}
-              rows={2}
-            />
-            <Button type="submit" size="sm" loading={createService.isPending}>
-              Create
-            </Button>
-          </form>
+          <ServiceForm
+            mode="create"
+            teamId={teamId}
+            onSuccess={() => setShowForm(false)}
+            onCancel={() => setShowForm(false)}
+          />
         )}
 
         {services.isLoading ? (
@@ -165,50 +141,71 @@ export function TeamDetailPage() {
         ) : serviceList.length > 0 ? (
           <div className="space-y-0">
             {serviceList.map((service) => (
-              <div
-                key={service.id}
-                className="flex items-center justify-between py-2.5 -mx-2 px-2 rounded-md hover:bg-zinc-50 dark:hover:bg-zinc-800/30 border-b border-zinc-200/60 dark:border-zinc-700/30 last:border-0 group"
-              >
-                <Link
-                  to="/services/$serviceId"
-                  params={{ serviceId: service.id }}
-                  className="flex-1 min-w-0 flex items-center gap-2"
-                >
-                  <Boxes className="w-4 h-4 text-zinc-400 dark:text-zinc-500" />
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[13px] font-medium text-zinc-900 dark:text-zinc-100">
-                        {service.name}
-                      </span>
-                      {service.repo_url && (
-                        <Badge variant="neutral" size="sm">
-                          repo
-                        </Badge>
+              <div key={service.id}>
+                <div className="flex items-center justify-between py-2.5 -mx-2 px-2 rounded-md hover:bg-zinc-50 dark:hover:bg-zinc-800/30 border-b border-zinc-200/60 dark:border-zinc-700/30 last:border-0 group">
+                  <Link
+                    to="/services/$serviceId"
+                    params={{ serviceId: service.id }}
+                    className="flex-1 min-w-0 flex items-center gap-2"
+                  >
+                    <Boxes className="w-4 h-4 text-zinc-400 dark:text-zinc-500" />
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[13px] font-medium text-zinc-900 dark:text-zinc-100">
+                          {service.name}
+                        </span>
+                        {service.repo_url && (
+                          <Badge variant="neutral" size="sm">
+                            repo
+                          </Badge>
+                        )}
+                      </div>
+                      {service.description && (
+                        <p className="text-[11px] text-zinc-400 dark:text-zinc-500 mt-0.5">
+                          {service.description}
+                        </p>
                       )}
                     </div>
-                    {service.description && (
-                      <p className="text-[11px] text-zinc-400 dark:text-zinc-500 mt-0.5">
-                        {service.description}
-                      </p>
-                    )}
+                  </Link>
+                  <button
+                    onClick={() => setEditingServiceId(editingServiceId === service.id ? null : service.id)}
+                    className="opacity-0 group-hover:opacity-100 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-opacity p-1"
+                    aria-label="Edit service"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: `Delete service '${service.name}'?`,
+                        message: "Its sources, documents, and chunks will be cascaded.",
+                        confirmLabel: "Delete service",
+                        variant: "danger",
+                      });
+                      if (!ok) return;
+                      await deleteService.mutateAsync(service.id);
+                    }}
+                    className="opacity-0 group-hover:opacity-100 text-zinc-400 hover:text-rose-500 transition-opacity p-1"
+                    aria-label="Delete service"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                {editingServiceId === service.id && (
+                  <div className="pb-3">
+                    <ServiceForm
+                      mode="edit"
+                      serviceId={service.id}
+                      initialValues={{
+                        name: service.name,
+                        repo_url: service.repo_url ?? "",
+                        description: service.description ?? "",
+                      }}
+                      onSuccess={() => setEditingServiceId(null)}
+                      onCancel={() => setEditingServiceId(null)}
+                    />
                   </div>
-                </Link>
-                <button
-                  onClick={async () => {
-                    const ok = await confirm({
-                      title: `Delete service '${service.name}'?`,
-                      message: "Its sources, documents, and chunks will be cascaded.",
-                      confirmLabel: "Delete service",
-                      variant: "danger",
-                    });
-                    if (!ok) return;
-                    await deleteService.mutateAsync(service.id);
-                  }}
-                  className="opacity-0 group-hover:opacity-100 text-zinc-400 hover:text-rose-500 transition-opacity p-1"
-                  aria-label="Delete service"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                )}
               </div>
             ))}
           </div>
