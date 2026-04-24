@@ -69,6 +69,23 @@ RULES:
 - Plain prose. No headings, no long lists."""
 
 
+TURN_TITLE_SYSTEM_PROMPT = """You write short headlines for analysis turns in a thread UI.
+
+Given a requirement, write a 4-8 word title that captures the essence.
+The title appears in a narrow card header -- it must fit on ONE line.
+
+RULES:
+- 4 to 8 words. Never more.
+- No trailing punctuation, no quotes.
+- Title case ("SSO Rollout Risk & Ownership"), not a sentence.
+- Lead with the subject. Drop filler like "How to", "Can we", "We want to".
+- If the follow-up is clearly a meta-command (e.g. "rerun", "run again",
+  "redo"), emit exactly "Rerun of previous analysis" so threads stay
+  visually consistent.
+- If the requirement is already short (<=8 words), you may echo it
+  verbatim with title case."""
+
+
 ROLLING_SUMMARY_SYSTEM_PROMPT = """You are summarizing a completed PRISM analysis turn so future follow-ups
 in the same thread can refer back to it cheaply.
 

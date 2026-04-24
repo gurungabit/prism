@@ -552,6 +552,7 @@ async def get_thread(thread_id: str):
                 "parent_analysis_id": row.get("parent_analysis_id"),
                 "kind": row.get("kind", "full"),
                 "requirement": row["requirement"],
+                "title": row.get("title") or "",
                 "status": row["status"],
                 "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
                 "duration_seconds": row.get("duration_seconds"),

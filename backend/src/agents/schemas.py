@@ -186,6 +186,12 @@ class PlanOutput(BaseModel):
     effective_requirement: str | None = None
 
 
+class TurnTitleOutput(BaseModel):
+    """4-8 word headline the UI uses in place of the full requirement text."""
+
+    title: str
+
+
 class ChatAnswerOutput(BaseModel):
     """Short-answer output for ``mode == "chat"`` follow-ups."""
 
