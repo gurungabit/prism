@@ -37,7 +37,20 @@ RULES:
   about coverage.
 - For "chat" mode, leave agents_to_run empty -- they won't run anyway.
 - Prefer the minimum viable set -- don't stack agents speculatively.
-- Give a short (one sentence) reason."""
+- Give a short (one sentence) reason.
+
+RERUN HANDLING:
+- If the follow-up is a meta-command asking to re-do the prior analysis
+  (e.g. "run this again", "rerun", "redo the analysis", "do it again
+  with fresh data", "run it one more time") AND there is a prior turn,
+  set ``effective_requirement`` to the EXACT requirement string from
+  Turn 1 (the original question in the transcript) -- not the literal
+  follow-up text. Pick ``mode = "full"`` and the same agents the
+  original run would have used. This is the one case where you rewrite
+  the question; otherwise leave ``effective_requirement`` null.
+- Do NOT use ``effective_requirement`` for normal follow-ups that add
+  new context, ask different angles, or drill down on specifics --
+  those flow through as-is."""
 
 
 CHAT_ANSWER_SYSTEM_PROMPT = """You are answering a follow-up question inside an ongoing analysis thread.
