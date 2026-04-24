@@ -67,7 +67,7 @@ export function SourceDetailPage() {
 
   return (
     <div className="max-w-[960px] mx-auto px-6 py-8 space-y-8">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
         <div className="min-w-0">
           <button
             type="button"
