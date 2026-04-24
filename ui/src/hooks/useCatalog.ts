@@ -1,12 +1,14 @@
 import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  addServiceDependency,
   createOrg,
   createService,
   createSource,
   createTeam,
   deleteOrg,
   deleteService,
+  deleteServiceDependency,
   deleteSource,
   deleteTeam,
   getDeclaredSource,
@@ -16,6 +18,7 @@ import {
   getTeam,
   listDeclaredSources,
   listOrgs,
+  listServiceDependencies,
   listServicesForTeam,
   listTeamsForOrg,
   triggerSourceIngest,
@@ -200,6 +203,41 @@ export function useDeleteService() {
     mutationFn: (serviceId: string) => deleteService(serviceId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["services-for-team"] });
+    },
+  });
+}
+
+// ---------- service dependencies ----------
+
+export function useServiceDependencies(serviceId: string | undefined) {
+  return useQuery({
+    queryKey: ["service-dependencies", serviceId],
+    queryFn: () => listServiceDependencies(serviceId!),
+    enabled: !!serviceId,
+    staleTime: 15_000,
+  });
+}
+
+export function useAddServiceDependency() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ serviceId, toServiceId }: { serviceId: string; toServiceId: string }) =>
+      addServiceDependency(serviceId, toServiceId),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["service-dependencies", vars.serviceId] });
+      qc.invalidateQueries({ queryKey: ["organization-graph"] });
+    },
+  });
+}
+
+export function useDeleteServiceDependency() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ serviceId, toServiceId }: { serviceId: string; toServiceId: string }) =>
+      deleteServiceDependency(serviceId, toServiceId),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["service-dependencies", vars.serviceId] });
+      qc.invalidateQueries({ queryKey: ["organization-graph"] });
     },
   });
 }

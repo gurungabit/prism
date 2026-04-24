@@ -18,7 +18,6 @@ from src.catalog.schema import (
     LEGACY_DETECTION_SQL,
     LEGACY_DOCUMENTS_RESET_SQL,
     LEGACY_DROP_SQL,
-    PENDING_DEPENDENCIES_SQL,
     REGISTRY_SCHEMA_SQL,
 )
 from src.config import settings
@@ -104,7 +103,6 @@ class CatalogRepo:
                 #    with the new scope-aware columns.
                 await conn.execute(DOCUMENT_SCHEMA_SQL)
                 await conn.execute(REGISTRY_SCHEMA_SQL)
-                await conn.execute(PENDING_DEPENDENCIES_SQL)
 
             CatalogRepo._initialized_dsns.add(self.dsn)
             log.info("catalog_schema_initialized")

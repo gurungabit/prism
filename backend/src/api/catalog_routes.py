@@ -268,16 +268,6 @@ async def create_service(team_id: UUID, body: ServiceCreateBody) -> Service:
             )
 
         service = await service_repo.insert(team_id, body.name, body.repo_url, body.description)
-
-        # Newly declared service might satisfy parked dependency edges. Walk
-        # ``kg_pending_dependencies`` for this name and promote matching rows.
-        reconciled = await service_repo.reconcile_pending_dependencies(service.id, service.name)
-        if reconciled:
-            log.info(
-                "pending_dependencies_reconciled",
-                service=service.name,
-                count=reconciled,
-            )
         return service
     finally:
         await service_repo.close()
@@ -330,6 +320,66 @@ async def delete_service(service_id: UUID) -> dict[str, str]:
         if not deleted:
             raise HTTPException(status_code=404, detail="Service not found")
         return {"status": "deleted", "service_id": str(service_id)}
+    finally:
+        await repo.close()
+
+
+# ---------- service dependencies (manual) ----------
+
+
+class ServiceDependencyCreateBody(BaseModel):
+    to_service_id: UUID
+
+
+@router.get("/services/{service_id}/dependencies")
+async def list_service_dependencies(service_id: UUID) -> dict[str, list[dict[str, Any]]]:
+    """Outbound deps for a single service -- what this service depends on."""
+    repo = await ServiceRepository.create()
+    try:
+        service = await repo.get(service_id)
+        if service is None:
+            raise HTTPException(status_code=404, detail="Service not found")
+        return {"dependencies": await repo.list_outbound_dependencies(service_id)}
+    finally:
+        await repo.close()
+
+
+@router.post("/services/{service_id}/dependencies")
+async def add_service_dependency(
+    service_id: UUID,
+    body: ServiceDependencyCreateBody,
+) -> dict[str, str]:
+    if service_id == body.to_service_id:
+        raise HTTPException(status_code=400, detail="A service cannot depend on itself")
+    repo = await ServiceRepository.create()
+    try:
+        src = await repo.get(service_id)
+        if src is None:
+            raise HTTPException(status_code=404, detail="Source service not found")
+        dst = await repo.get(body.to_service_id)
+        if dst is None:
+            raise HTTPException(status_code=404, detail="Target service not found")
+        # ``source_doc='manual'`` marks the edge as user-entered so we can
+        # visually distinguish hand-drawn edges from any future pipeline-added
+        # ones -- today every edge is manual, but the column is preserved so
+        # the UI can later badge or filter by origin.
+        await repo.add_dependency(service_id, body.to_service_id, source_doc="manual")
+        return {"status": "added"}
+    finally:
+        await repo.close()
+
+
+@router.delete("/services/{service_id}/dependencies/{to_service_id}")
+async def delete_service_dependency(
+    service_id: UUID,
+    to_service_id: UUID,
+) -> dict[str, str]:
+    repo = await ServiceRepository.create()
+    try:
+        removed = await repo.remove_dependency(service_id, to_service_id)
+        if not removed:
+            raise HTTPException(status_code=404, detail="Dependency not found")
+        return {"status": "removed"}
     finally:
         await repo.close()
 

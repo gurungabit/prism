@@ -334,6 +334,37 @@ export function deleteService(serviceId: string) {
   return request<{ status: string }>(`/api/services/${serviceId}`, { method: "DELETE" });
 }
 
+// ── Catalog: service dependencies (manual) ───────────
+
+export interface ServiceDependency {
+  to_service_id: string;
+  to_service_name: string;
+  team_id: string | null;
+  team_name: string | null;
+  source: string;
+  last_updated: string | null;
+}
+
+export function listServiceDependencies(serviceId: string) {
+  return request<{ dependencies: ServiceDependency[] }>(
+    `/api/services/${serviceId}/dependencies`,
+  );
+}
+
+export function addServiceDependency(serviceId: string, toServiceId: string) {
+  return request<{ status: string }>(`/api/services/${serviceId}/dependencies`, {
+    method: "POST",
+    body: JSON.stringify({ to_service_id: toServiceId }),
+  });
+}
+
+export function deleteServiceDependency(serviceId: string, toServiceId: string) {
+  return request<{ status: string }>(
+    `/api/services/${serviceId}/dependencies/${toServiceId}`,
+    { method: "DELETE" },
+  );
+}
+
 // ── Catalog: sources ─────────────────────────────────
 
 export type SourceScope = "org" | "team" | "service";

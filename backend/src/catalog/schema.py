@@ -81,26 +81,6 @@ CREATE TABLE IF NOT EXISTS source_secrets (
 """
 
 
-# When a document says "depends on foo-service" but no declared service of that
-# name exists yet, we park the edge here instead of dropping it or
-# auto-creating a stub service (see open question 5 in the plan). Each row
-# refers to the declared ``from_service_id`` and keeps the target as free text.
-# When a matching service is declared later, ``reconcile_pending_dependencies``
-# promotes these into real ``kg_dependencies`` rows.
-PENDING_DEPENDENCIES_SQL = """
-CREATE TABLE IF NOT EXISTS kg_pending_dependencies (
-    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    from_service_id  UUID NOT NULL REFERENCES services(id) ON DELETE CASCADE,
-    to_service_name  TEXT NOT NULL,
-    source_doc       TEXT NOT NULL DEFAULT '',
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (from_service_id, to_service_name)
-);
-CREATE INDEX IF NOT EXISTS kg_pending_dependencies_to_idx
-    ON kg_pending_dependencies(to_service_name);
-"""
-
-
 # kg_documents + kg_dependencies are re-created against the new scope model.
 # They used TEXT keys keyed to regex-inferred team/service names; now they
 # carry UUID foreign keys into ``teams``/``services``. See plan "Schema
