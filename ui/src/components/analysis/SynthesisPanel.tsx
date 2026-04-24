@@ -251,6 +251,13 @@ export function SynthesisPanel({
 
   return (
     <div className="py-6 border-b border-zinc-200/60 dark:border-zinc-700/30 space-y-5">
+      {/* Surface the requirement first so readers see WHAT was asked before
+          they scan the brief answering it. Supplementary context
+          (business_goal / constraints / etc.) still lives at the bottom. */}
+      {analysisInput?.requirement && (
+        <ContextChip label="Requirement" value={analysisInput.requirement} />
+      )}
+
       <div>
         <h2 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500 mb-3">
           Executive Brief
@@ -325,7 +332,6 @@ export function SynthesisPanel({
 
       {analysisInput && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          <ContextChip label="Requirement" value={analysisInput.requirement} />
           <ContextChip label="Business Goal" value={analysisInput.business_goal} />
           <ContextChip label="Constraints" value={analysisInput.constraints} />
           <ContextChip label="Additional Context" value={analysisInput.context} />
