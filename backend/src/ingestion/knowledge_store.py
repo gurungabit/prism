@@ -1,15 +1,11 @@
-"""Document + dependency writer that honors the declared catalog.
+"""Document writer that honors the declared catalog.
 
-Historically this module owned the "who-owns-what" graph inferred from
-document text. That role has moved to the declarative catalog (see
-``src.catalog``). What remains:
-
-- Writing ``kg_documents`` rows (title/path/platform/scope pointers) each
-  time the pipeline finishes a document.
-- Maintaining ``kg_dependencies`` between declared services when a doc text
-  says "depends on X". When the target service has not been declared, the
-  edge is parked in ``kg_pending_dependencies`` via
-  ``ServiceRepository.add_pending_dependency``.
+Historically this module also owned the "who-owns-what" graph inferred
+from document text. That role has moved to the declarative catalog
+(see ``src.catalog``). What remains: writing ``kg_documents`` rows
+(title/path/platform/scope pointers) each time the pipeline finishes a
+document. Service-to-service dependencies are user-managed via the
+catalog API, not extracted from doc text.
 
 Team/service catalog tables and their schema bootstrap live in
 ``src.catalog.base_repo`` now. This class assumes the catalog schema has

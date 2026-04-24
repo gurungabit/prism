@@ -169,63 +169,51 @@ class ServiceRepository(CatalogRepo):
                 source_doc,
             )
 
-    async def add_pending_dependency(
+    async def remove_dependency(
         self,
         from_service_id: UUID,
-        to_service_name: str,
-        source_doc: str = "",
-    ) -> None:
+        to_service_id: UUID,
+    ) -> bool:
         async with self.pool.acquire() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 """
-                INSERT INTO kg_pending_dependencies (from_service_id, to_service_name, source_doc)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (from_service_id, to_service_name) DO UPDATE SET
-                    source_doc = EXCLUDED.source_doc
+                DELETE FROM kg_dependencies
+                WHERE from_service_id = $1 AND to_service_id = $2
                 """,
                 from_service_id,
-                to_service_name,
-                source_doc,
+                to_service_id,
             )
+            return result.endswith(" 1")
 
-    async def reconcile_pending_dependencies(self, service_id: UUID, service_name: str) -> int:
-        """When a service is declared, promote any pending edges pointing at
-        ``service_name`` into real dependencies.
-
-        Returns the number of edges reconciled.
-        """
+    async def list_outbound_dependencies(self, from_service_id: UUID) -> list[dict]:
+        """Edges where ``from_service_id`` is the source. Used by the service
+        detail page's Dependencies section."""
         async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                rows = await conn.fetch(
-                    """
-                    SELECT from_service_id, source_doc
-                    FROM kg_pending_dependencies
-                    WHERE to_service_name = $1
-                    """,
-                    service_name,
-                )
-                if not rows:
-                    return 0
-
-                for row in rows:
-                    await conn.execute(
-                        """
-                        INSERT INTO kg_dependencies (from_service_id, to_service_id, source, last_updated)
-                        VALUES ($1, $2, $3, now())
-                        ON CONFLICT (from_service_id, to_service_id) DO UPDATE SET
-                            source = EXCLUDED.source,
-                            last_updated = now()
-                        """,
-                        row["from_service_id"],
-                        service_id,
-                        row["source_doc"],
-                    )
-
-                await conn.execute(
-                    "DELETE FROM kg_pending_dependencies WHERE to_service_name = $1",
-                    service_name,
-                )
-                return len(rows)
+            rows = await conn.fetch(
+                """
+                SELECT d.to_service_id, d.source, d.last_updated,
+                       s.name  AS to_service_name,
+                       s.team_id,
+                       t.name  AS team_name
+                FROM kg_dependencies d
+                JOIN services s ON s.id = d.to_service_id
+                LEFT JOIN teams t ON t.id = s.team_id
+                WHERE d.from_service_id = $1
+                ORDER BY s.name ASC
+                """,
+                from_service_id,
+            )
+            return [
+                {
+                    "to_service_id": str(r["to_service_id"]),
+                    "to_service_name": r["to_service_name"],
+                    "team_id": str(r["team_id"]) if r["team_id"] else None,
+                    "team_name": r["team_name"],
+                    "source": r["source"],
+                    "last_updated": r["last_updated"].isoformat() if r["last_updated"] else None,
+                }
+                for r in rows
+            ]
 
     async def list_all_dependencies(self) -> list[dict]:
         """Every declared edge in ``kg_dependencies`` with resolved names.

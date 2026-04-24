@@ -8,6 +8,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { Badge } from "../components/shared/Badge";
 import { DeclaredSourceRow } from "../components/sources/DeclaredSourceRow";
 import { ServiceForm } from "../components/catalog/ServiceForm";
+import { DependenciesSection } from "../components/catalog/DependenciesSection";
 import { useDeclaredSources, useServiceById } from "../hooks/useCatalog";
 
 export function ServiceDetailPage() {
@@ -103,6 +104,8 @@ export function ServiceDetailPage() {
           onCancel={() => setEditing(false)}
         />
       )}
+
+      <DependenciesSection serviceId={serviceId} />
 
       <section className="space-y-3">
         <div className="flex items-center justify-between">
