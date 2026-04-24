@@ -225,13 +225,26 @@ class IngestionPipeline:
 
         prepared: list[PreparedDocument] = []
 
-        log.info("phase_1_parse_chunk", source=source.name)
-        for ref in doc_refs:
+        log.info("phase_1_parse_chunk", source=source.name, total=len(doc_refs))
+        for idx, ref in enumerate(doc_refs, start=1):
             try:
+                log.info(
+                    "fetch_document_start",
+                    source=source.name,
+                    index=idx,
+                    total=len(doc_refs),
+                    path=ref.source_path,
+                )
                 # Connector uses a sync httpx.Client; run per-doc fetches on a
                 # worker thread so the event loop stays responsive for the UI
                 # while we walk a large repo.
                 raw_doc = await asyncio.to_thread(connector.fetch_document, ref)
+                log.info(
+                    "fetch_document_ok",
+                    source=source.name,
+                    index=idx,
+                    path=ref.source_path,
+                )
                 content = raw_doc.content if isinstance(raw_doc.content, str) else raw_doc.content
                 content_hash = compute_content_hash(content)
 
