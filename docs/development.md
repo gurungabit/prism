@@ -110,9 +110,7 @@ backend/src/
 │   ├── indexer.py
 │   ├── registry.py
 │   ├── analysis_store.py
-│   ├── knowledge_store.py
-│   ├── entity_extractor.py
-│   └── team_names.py
+│   └── knowledge_store.py
 │
 ├── retrieval/
 │   ├── hybrid_search.py
@@ -170,11 +168,13 @@ ui/src/
 │
 ├── components/
 │   ├── analysis/
+│   ├── catalog/        # OrgForm, TeamForm, ServiceForm, DependenciesSection
 │   ├── chat/
 │   ├── layout/
+│   ├── organization/   # OrganizationGraph + node detail panel
 │   ├── search/
-│   ├── shared/
-│   └── sources/
+│   ├── shared/         # Button, Input, Modal, ConfirmDialog, ...
+│   └── sources/        # GitlabEntitySelect / Project / Group pickers
 │
 ├── hooks/
 ├── stores/
@@ -225,3 +225,11 @@ If the report model changes, update both:
 | Retrieval rounds | `config.py` | More rounds improve coverage, slow analysis |
 | Staleness threshold | `config.py` | Controls stale-source warnings |
 | Search page size | `backend/src/api/routes.py` | Changes search pagination size |
+| Group active window | `config.py` (`gitlab_group_active_window_days`) | How recently a project must have been active to be ingested |
+
+## Documentation Hygiene
+
+When you change behavior the docs care about, update them in the same
+commit. The relevant docs (and what each owns) live in `docs/README.md`
+and are linked from `CLAUDE.md` / `AGENTS.md`. Reviewers will push back
+on unexplained behavior changes.

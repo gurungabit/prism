@@ -176,9 +176,10 @@ Every source row satisfies `(org_id IS NOT NULL) + (team_id IS NOT NULL) +
 
 - `kg_documents` holds denormalized `(source_id, org_id, team_id, service_id)`
   plus title/path/platform. Dropping a source cascades these away.
-- `kg_dependencies` is now keyed by service UUIDs (`from_service_id`,
-  `to_service_id`). Edges whose target isn't yet declared are parked in
-  `kg_pending_dependencies` and reconciled when the missing service appears.
+- `kg_dependencies` is keyed by service UUIDs (`from_service_id`,
+  `to_service_id`). Rows are user-managed via the service detail page; the
+  ingestion pipeline does not write to it. Edges carry `source = 'manual'`
+  so any future automated origin can be distinguished.
 - `document_registry` keeps content-hash idempotency and gains `source_id`.
 
 ## Ingestion Flow
@@ -201,7 +202,6 @@ sequenceDiagram
     Pipe->>Pipe: parse → chunk → tag with scope → embed
     Pipe->>Store: bulk index chunks (with org_id, team_id, service_id)
     Pipe->>Cat: write kg_documents + document_registry
-    Pipe->>Cat: extract service deps (service-scoped only)
     Pipe-->>API: status: ready | error
 ```
 
@@ -304,7 +304,7 @@ sequenceDiagram
 | **Catalog tables** (`organizations`, `teams`, `services`, `sources`) | The authoritative declared ownership graph. All other writes reference these by UUID FK. |
 | **OpenSearch** | Chunk storage, embeddings, hybrid retrieval, source preview lookup. Chunks carry `source_id`, `org_id`, `team_id`, `service_id` for filter pushdown. |
 | **PostgreSQL / kg_documents** | One row per ingested document with scope pointers + source pointer. |
-| **PostgreSQL / kg_dependencies** | Service-to-service edges by UUID. Unresolved targets sit in `kg_pending_dependencies` until reconciled. |
+| **PostgreSQL / kg_dependencies** | User-managed service-to-service edges by UUID. Written by the service detail page UI, not by ingestion. |
 | **PostgreSQL / document_registry** | Idempotency (content hash) + which source ingested each doc. |
 | **PostgreSQL / analyses** | Analysis history + LangGraph checkpoints. Unchanged by Phase 1. |
 | **Redis** | Present in local Docker stack as auxiliary infrastructure. |

@@ -78,9 +78,10 @@ Backend settings use the `PRISM_` prefix.
 | `PRISM_REDIS_URL` | `redis://localhost:6379` | Redis endpoint |
 | `PRISM_DATA_DIR` | `./data` | data root (only used by path-based connectors) |
 | `PRISM_GITLAB_BASE_URL` | `https://gitlab.com/api/v4` | GitLab API endpoint; override for self-hosted |
+| `PRISM_GITLAB_TOKEN` | `""` | server-wide PAT/service-account token. Used when a source row doesn't carry its own token (the wizard no longer collects per-source tokens). |
 | `PRISM_GITLAB_REQUEST_TIMEOUT_SECONDS` | `30.0` | per-request timeout for the GitLab connector |
 | `PRISM_GITLAB_MAX_PROJECTS_PER_SOURCE` | `200` | safety cap on group-scoped sources |
-| `PRISM_GITLAB_MAX_DOCS_PER_PROJECT` | `50` | safety cap per project |
+| `PRISM_GITLAB_GROUP_ACTIVE_WINDOW_DAYS` | `30` | when ingesting a whole group, skip projects with no activity in the last N days. `0` disables the filter. Single-project ingest is unaffected. |
 | `PRISM_EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | embedding model |
 | `PRISM_EMBEDDING_DIMENSION` | `384` | vector dimension |
 | `PRISM_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | reranker |
@@ -104,10 +105,11 @@ Start the proxy before running PRISM. Any OpenAI-compatible server works — swa
 
 If the proxy is unreachable, PRISM still runs but degrades:
 
-- entity extraction falls back to deterministic patterns
 - query expansion simplifies
 - agent outputs may be partial or empty
 - chat cannot produce high-quality grounded answers
+- LLM-generated turn titles never land (UI falls back to the raw
+  requirement text as the turn header)
 
 ## Health Checks
 
@@ -118,6 +120,22 @@ Compose health checks are defined for:
 - Redis
 
 `./run.sh` also waits for the API and UI to become reachable before reporting success.
+
+### Wipe and restart
+
+`./run.sh --clean` runs `docker compose down -v` before bringing services
+up, which wipes the Postgres + OpenSearch + Redis volumes. Useful when
+iterating on schema changes that aren't bridged by `ALTER TABLE`
+self-healing migrations -- the bootstrap path runs every `CREATE TABLE
+IF NOT EXISTS` again on first connection.
+
+### Orphaned sources on restart
+
+When the API process is killed mid-ingest, the `sources` row stays at
+`status='syncing'` until something moves it. On startup, the lifespan hook
+in `main.py` flips every `syncing` row to `error` with
+`last_error='Ingest interrupted by restart'`, so the UI's Sync button
+unlocks without a manual SQL nudge.
 
 ## AWS Migration Path
 
