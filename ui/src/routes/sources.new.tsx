@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   ArrowRight,
@@ -49,6 +50,7 @@ export function NewSourcePage() {
     scopeId?: string;
   };
   const navigate = useNavigate();
+  const qc = useQueryClient();
 
   const orgs = useOrgs();
 
@@ -106,21 +108,18 @@ export function NewSourcePage() {
     return { path: localPath.trim() };
   }, [kind, gitlabMode, projectPath, groupPath, gitRef, includeSubgroups, localPath]);
 
-  // Derive a sensible default name once the user has config + scope.
-  useEffect(() => {
-    if (sourceName) return;
-    if (kind === "gitlab") {
-      const path = gitlabMode === "project" ? projectPath : groupPath;
-      if (path) setSourceName(`GitLab: ${path}`);
-    }
-  }, [kind, gitlabMode, projectPath, groupPath, sourceName]);
+  // Source name is user-entered -- no autofill. Validation happens at step
+  // advance / submit time so the user can't skip it.
 
   const canAdvanceStep1 = Boolean(scope && scopeId);
   const canAdvanceStep2 = Boolean(kind);
+  // Source name is always required -- the user picks the label that'll
+  // appear across the sources list, analyses citations, etc.
   const canAdvanceStep3 =
-    kind === "gitlab"
+    sourceName.trim().length > 0 &&
+    (kind === "gitlab"
       ? (gitlabMode === "project" ? projectPath.trim() : groupPath.trim()).length > 0
-      : localPath.trim().length > 0;
+      : localPath.trim().length > 0);
 
   async function runValidate() {
     setGlobalError(null);
@@ -153,6 +152,22 @@ export function NewSourcePage() {
         config: builtConfig,
       });
       await triggerIngest.mutateAsync({ sourceId: created.id });
+      // Pre-seed the detail-page queries so the destination renders
+      // immediately instead of flashing its loading skeleton while the
+      // first fetch resolves. The source row we just created has every
+      // field ``useDeclaredSource`` needs except the derived ``documents``
+      // list, which it'll populate on the first poll tick.
+      qc.setQueryData(["declared-source", created.id], {
+        ...created,
+        document_count: 0,
+        documents: [],
+      });
+      qc.setQueryData(["declared-source-status", created.id], {
+        source_id: created.id,
+        status: "syncing",
+        last_ingested_at: null,
+        last_error: null,
+      });
       navigate({ to: "/sources/$sourceId", params: { sourceId: created.id } });
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : "Failed to create source");
@@ -357,10 +372,11 @@ export function NewSourcePage() {
           {kind === "gitlab" ? (
             <>
               <Input
-                label="Source name"
-                placeholder="How this appears in the sources list"
+                label="Source name *"
+                placeholder="e.g. backend monorepo docs"
                 value={sourceName}
                 onChange={(e) => setSourceName(e.target.value)}
+                required
               />
               <div className="flex items-center gap-2">
                 <label className="flex items-center gap-1.5 text-[12px] text-zinc-600 dark:text-zinc-400">
@@ -412,10 +428,11 @@ export function NewSourcePage() {
           ) : (
             <>
               <Input
-                label="Source name"
-                placeholder="How this appears in the sources list"
+                label="Source name *"
+                placeholder="e.g. backend monorepo docs"
                 value={sourceName}
                 onChange={(e) => setSourceName(e.target.value)}
+                required
               />
               <Input
                 label="Local path"
