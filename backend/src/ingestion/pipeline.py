@@ -298,19 +298,30 @@ class IngestionPipeline:
                     continue
 
                 chunks = chunk_document(document_id, parsed_content, raw_doc)
+                log.info(
+                    "chunked",
+                    source=source.name,
+                    index=idx,
+                    chunks=len(chunks),
+                    content_len=len(parsed_content),
+                )
                 self._stamp_scope_onto_chunks(chunks, scope)
 
+                log.info("dedup_start", source=source.name, index=idx, chunks=len(chunks))
                 for chunk in chunks:
                     canonical = self.deduplicator.check_duplicate(chunk.chunk_id, chunk.content)
                     if canonical:
                         chunk.canonical_chunk_id = canonical
+                log.info("dedup_ok", source=source.name, index=idx)
 
                 # Entity extraction remains regex-only in Phase 1: the LLM
                 # path is wired up but never fires under the declared model
                 # because ownership no longer comes from docs. We keep the
                 # regex pass so we still pick up service-to-service
                 # dependencies mentioned in text.
+                log.info("entity_start", source=source.name, index=idx)
                 entities = _regex_fallback(parsed_content, raw_doc.ref.source_path)
+                log.info("entity_ok", source=source.name, index=idx)
 
                 prepared.append(
                     PreparedDocument(
