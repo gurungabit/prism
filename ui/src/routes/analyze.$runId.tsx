@@ -1429,7 +1429,9 @@ export function AnalyzeRunPage() {
     );
   }
 
-  const rootRequirement = turns[0]?.requirement ?? "Analysis";
+  const rootTurn = turns[0];
+  const rootRequirement = rootTurn?.requirement ?? "Analysis";
+  const rootTitle = rootTurn?.title || rootRequirement;
 
   return (
     // Flex-column that fills the main scroll area. The body scrolls
@@ -1450,8 +1452,11 @@ export function AnalyzeRunPage() {
             <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-400 dark:text-zinc-500">
               Thread
             </p>
-            <h1 className="text-[18px] sm:text-[21px] font-semibold tracking-tight leading-[1.2] text-zinc-900 dark:text-zinc-100 whitespace-normal break-words">
-              {rootRequirement}
+            <h1
+              className="text-[18px] sm:text-[21px] font-semibold tracking-tight leading-[1.2] text-zinc-900 dark:text-zinc-100 whitespace-normal break-words"
+              title={rootRequirement}
+            >
+              {rootTitle}
             </h1>
             <p className="text-[11px] text-zinc-400 dark:text-zinc-500 mt-1.5 font-mono">
               {threadId} · {turns.length} {turns.length === 1 ? "turn" : "turns"}
@@ -1710,8 +1715,11 @@ function FullTurnCard({
               </Badge>
             )}
           </div>
-          <div className="text-[13px] font-medium text-zinc-900 dark:text-zinc-100 truncate">
-            {turn.requirement}
+          <div
+            className="text-[13px] font-medium text-zinc-900 dark:text-zinc-100 leading-relaxed line-clamp-2"
+            title={turn.requirement}
+          >
+            {turn.title || turn.requirement}
           </div>
           {!open && (
             <p className="text-[12px] text-zinc-500 dark:text-zinc-400 line-clamp-2 leading-relaxed">

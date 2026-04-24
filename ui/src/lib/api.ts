@@ -163,6 +163,9 @@ export interface ThreadSummary {
   started_at: string;
   last_turn_at: string;
   requirement: string;
+  // 4-8 word headline from the planner's title step. Empty if the title
+  // task hasn't completed (or this is an old row).
+  title: string;
   status: string;
   duration_seconds: number | null;
 }
@@ -197,6 +200,9 @@ export interface ThreadTurn {
   // for pending turns so follow-ups don't flash the full pipeline view.
   kind: "full" | "chat" | "pending";
   requirement: string;
+  // 4-8 word LLM-generated headline. Empty until the planner's title task
+  // writes it back; UI falls back to ``requirement`` while empty.
+  title: string;
   status: string;
   created_at: string | null;
   duration_seconds: number | null;

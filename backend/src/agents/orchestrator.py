@@ -20,6 +20,7 @@ from src.agents.prompts import (
     PLANNER_SYSTEM_PROMPT,
     ROLLING_SUMMARY_SYSTEM_PROMPT,
     SYNTHESIS_SYSTEM_PROMPT,
+    TURN_TITLE_SYSTEM_PROMPT,
     build_chat_answer_prompt,
     build_rolling_summary_prompt,
     build_synthesis_prompt,
@@ -33,6 +34,7 @@ from src.agents.schemas import (
     PlanOutput,
     RollingSummaryOutput,
     SynthesisOutput,
+    TurnTitleOutput,
 )
 from src.agents.state_codec import checkpoint_safe_update, normalize_chunks
 from src.agents.step_callbacks import clear_step_callback, get_step_callback, register_step_callback
@@ -147,6 +149,38 @@ def _format_thread_context(prior_turns: list) -> str:
     return "\n\n".join(lines)
 
 
+async def _generate_and_persist_title(analysis_id: str, requirement: str) -> None:
+    # Fire-and-forget helper: generate a 4-8 word headline, then write it
+    # onto the analysis row so the UI can swap it in for the raw
+    # paragraph-length requirement. Any failure is logged and swallowed --
+    # the UI falls back to the requirement if title stays NULL.
+    try:
+        result = await llm_call(
+            prompt=f"Requirement:\n{requirement}\n\nWrite the title.",
+            system_prompt=TURN_TITLE_SYSTEM_PROMPT,
+            output_schema=TurnTitleOutput,
+            model=settings.model_bulk,
+            agent_name="title",
+            analysis_id=analysis_id,
+        )
+        title = (result.title or "").strip().strip('"').strip("'")
+        if not title:
+            return
+        from src.ingestion.analysis_store import AnalysisRepository
+
+        repo = await AnalysisRepository.create()
+        try:
+            await repo.update_title(analysis_id, title)
+        finally:
+            await repo.close()
+    except Exception as e:  # noqa: BLE001
+        log.warning(
+            "title_generation_failed",
+            analysis_id=analysis_id,
+            error=str(e)[:200],
+        )
+
+
 async def plan_node(state: OrchestratorState) -> dict:
     analysis_id = state["analysis_id"]
     on_step = get_step_callback(analysis_id)
@@ -158,6 +192,12 @@ async def plan_node(state: OrchestratorState) -> dict:
         requirement=requirement[:100],
         prior_turn_count=len(prior_turns),
     )
+
+    # Kick off title generation in the background so it overlaps with the
+    # rest of the pipeline. The UI polls/streams for row updates, so the
+    # title lands on the turn card as soon as it's ready -- usually well
+    # before synthesis completes.
+    asyncio.create_task(_generate_and_persist_title(analysis_id, requirement))
 
     if on_step:
         await on_step(

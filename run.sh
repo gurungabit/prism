@@ -5,6 +5,24 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$ROOT_DIR/backend"
 FRONTEND_DIR="$ROOT_DIR/ui"
 
+# --clean wipes every docker-compose volume (Postgres, OpenSearch, Redis)
+# before bringing services back up, so the app boots from an empty
+# database. Useful when iterating on schema changes that shouldn't be
+# bridged with ALTER TABLE migrations.
+CLEAN=0
+for arg in "$@"; do
+    case "$arg" in
+        --clean)
+            CLEAN=1
+            ;;
+        *)
+            echo "Unknown arg: $arg" >&2
+            echo "Usage: $0 [--clean]" >&2
+            exit 1
+            ;;
+    esac
+done
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -73,6 +91,12 @@ ok "Python packages installed"
 step "Installing frontend dependencies"
 (cd "$FRONTEND_DIR" && bun install --silent)
 ok "Frontend packages installed"
+
+if [ "$CLEAN" -eq 1 ]; then
+    step "Cleaning infrastructure volumes (--clean requested)"
+    docker compose -f "$ROOT_DIR/docker-compose.yml" down -v 2>&1 | grep -v "^$" || true
+    ok "Volumes wiped"
+fi
 
 step "Starting infrastructure (OpenSearch, PostgreSQL, Redis)"
 docker compose -f "$ROOT_DIR/docker-compose.yml" up -d opensearch postgres redis 2>&1 | grep -v "^$"

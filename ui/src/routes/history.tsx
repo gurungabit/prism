@@ -75,8 +75,11 @@ export function HistoryPage() {
                 className="flex items-center justify-between py-3 border-b border-zinc-100 dark:border-zinc-800/30 last:border-0 hover:bg-zinc-50/50 dark:hover:bg-zinc-800/20 -mx-2 px-2 rounded-md transition-colors group"
               >
                 <div className="flex-1 min-w-0 mr-4">
-                  <p className="text-[13px] text-zinc-800 dark:text-zinc-200 truncate group-hover:text-[var(--color-accent)] dark:group-hover:text-[var(--color-accent-dark)] transition-colors">
-                    {thread.requirement}
+                  <p
+                    className="text-[13px] text-zinc-800 dark:text-zinc-200 truncate group-hover:text-[var(--color-accent)] dark:group-hover:text-[var(--color-accent-dark)] transition-colors"
+                    title={thread.requirement}
+                  >
+                    {thread.title || thread.requirement}
                   </p>
                   <div className="flex items-center gap-3 mt-1">
                     <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
