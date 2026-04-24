@@ -55,7 +55,13 @@ async def dependency_agent(state: dict[str, Any]) -> dict[str, Any]:
         graph_deps = json.dumps(deps_map, indent=2, default=str)
         services_text = ", ".join(service_names) if service_names else "None identified"
 
-        prompt = build_dependency_prompt(requirement, chunks_text, graph_deps, services_text)
+        prompt = build_dependency_prompt(
+            requirement,
+            chunks_text,
+            graph_deps,
+            services_text,
+            thread_transcript=state.get("thread_transcript") or "",
+        )
 
         dep_output = await llm_call(
             prompt=prompt,

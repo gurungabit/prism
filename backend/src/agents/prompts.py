@@ -246,10 +246,28 @@ RULES:
 - Don't pad. Shorter is better when you have nothing to add."""
 
 
-def build_router_prompt(requirement: str, chunks_text: str, graph_data: str, conflicts: str) -> str:
+def _thread_context_block(thread_transcript: str) -> str:
+    # Injected above REQUIREMENT so the LLM reads prior context first. Empty
+    # transcript means a first-turn run -- emit nothing so the prompt stays
+    # identical to the non-threaded case.
+    if not thread_transcript:
+        return ""
+    return (
+        "PRIOR THREAD CONTEXT (oldest -> newest, summarize only -- full chunks are below):\n"
+        f"{thread_transcript}\n\n"
+    )
+
+
+def build_router_prompt(
+    requirement: str,
+    chunks_text: str,
+    graph_data: str,
+    conflicts: str,
+    thread_transcript: str = "",
+) -> str:
     return f"""Analyze this requirement and determine team ownership.
 
-REQUIREMENT:
+{_thread_context_block(thread_transcript)}REQUIREMENT:
 {requirement}
 
 RETRIEVED DOCUMENTS:
@@ -264,10 +282,16 @@ OWNERSHIP CONFLICTS DETECTED:
 Score each candidate team and identify all affected services."""
 
 
-def build_dependency_prompt(requirement: str, chunks_text: str, graph_deps: str, services: str) -> str:
+def build_dependency_prompt(
+    requirement: str,
+    chunks_text: str,
+    graph_deps: str,
+    services: str,
+    thread_transcript: str = "",
+) -> str:
     return f"""Map dependencies for this requirement.
 
-REQUIREMENT:
+{_thread_context_block(thread_transcript)}REQUIREMENT:
 {requirement}
 
 IDENTIFIED SERVICES:
@@ -282,10 +306,16 @@ RELEVANT DOCUMENTS:
 Classify each dependency as blocking, impacted, or informational."""
 
 
-def build_risk_effort_prompt(requirement: str, chunks_text: str, services: str, teams: str) -> str:
+def build_risk_effort_prompt(
+    requirement: str,
+    chunks_text: str,
+    services: str,
+    teams: str,
+    thread_transcript: str = "",
+) -> str:
     return f"""Assess risks and estimate effort for this requirement.
 
-REQUIREMENT:
+{_thread_context_block(thread_transcript)}REQUIREMENT:
 {requirement}
 
 AFFECTED SERVICES:
@@ -300,10 +330,16 @@ RELEVANT DOCUMENTS:
 Identify risks, estimate effort as a range, and recommend staffing."""
 
 
-def build_coverage_prompt(requirement: str, analysis_summary: str, platforms: str, doc_stats: str) -> str:
+def build_coverage_prompt(
+    requirement: str,
+    analysis_summary: str,
+    platforms: str,
+    doc_stats: str,
+    thread_transcript: str = "",
+) -> str:
     return f"""Verify analysis coverage for this requirement.
 
-REQUIREMENT:
+{_thread_context_block(thread_transcript)}REQUIREMENT:
 {requirement}
 
 ANALYSIS SO FAR:
@@ -372,10 +408,11 @@ def build_synthesis_prompt(
     coverage: str,
     citations: str,
     conflicts: str,
+    thread_transcript: str = "",
 ) -> str:
     return f"""Synthesize the final PRISM report.
 
-ANALYSIS REQUEST:
+{_thread_context_block(thread_transcript)}ANALYSIS REQUEST:
 {requirement}
 
 TEAM ROUTING:

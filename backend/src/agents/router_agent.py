@@ -56,7 +56,13 @@ async def router_agent(state: dict[str, Any]) -> dict[str, Any]:
         graph_data = json.dumps(teams, indent=2, default=str)
         conflicts_text = "None detected"
 
-        prompt = build_router_prompt(requirement, chunks_text, graph_data, conflicts_text)
+        prompt = build_router_prompt(
+            requirement,
+            chunks_text,
+            graph_data,
+            conflicts_text,
+            thread_transcript=state.get("thread_transcript") or "",
+        )
 
         if on_step:
             await on_step(

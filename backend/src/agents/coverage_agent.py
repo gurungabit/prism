@@ -35,7 +35,13 @@ async def coverage_agent(state: dict[str, Any]) -> dict[str, Any]:
     doc_stats = _build_doc_stats(chunks)
 
     try:
-        prompt = build_coverage_prompt(requirement, analysis_summary, platforms, doc_stats)
+        prompt = build_coverage_prompt(
+            requirement,
+            analysis_summary,
+            platforms,
+            doc_stats,
+            thread_transcript=state.get("thread_transcript") or "",
+        )
 
         coverage = await llm_call(
             prompt=prompt,
