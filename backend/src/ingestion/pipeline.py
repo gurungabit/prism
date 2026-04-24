@@ -21,6 +21,7 @@ Status transitions on ``sources``: pending -> syncing -> ready | error.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -227,7 +228,10 @@ class IngestionPipeline:
         log.info("phase_1_parse_chunk", source=source.name)
         for ref in doc_refs:
             try:
-                raw_doc = connector.fetch_document(ref)
+                # Connector uses a sync httpx.Client; run per-doc fetches on a
+                # worker thread so the event loop stays responsive for the UI
+                # while we walk a large repo.
+                raw_doc = await asyncio.to_thread(connector.fetch_document, ref)
                 content = raw_doc.content if isinstance(raw_doc.content, str) else raw_doc.content
                 content_hash = compute_content_hash(content)
 
@@ -289,11 +293,18 @@ class IngestionPipeline:
         for doc in prepared:
             all_chunks.extend(doc.chunks)
 
-        all_chunks = embed_chunks(all_chunks, batch_size=256)
+        # Embedding + OpenSearch bulk index are both blocking CPU/IO.
+        # Offload to a worker thread so API requests keep being served
+        # while a large project is syncing.
+        all_chunks = await asyncio.to_thread(
+            embed_chunks, all_chunks, batch_size=256
+        )
         log.info("embedding_complete", total_chunks=len(all_chunks))
 
         log.info("phase_3_index", source=source.name, chunks=len(all_chunks))
-        indexed = index_chunks(all_chunks, self.os_client, source_id=source.id)
+        indexed = await asyncio.to_thread(
+            index_chunks, all_chunks, self.os_client, source_id=source.id
+        )
         log.info("opensearch_indexed", count=indexed)
 
         log.info("phase_4_graph", source=source.name, documents=len(prepared))
