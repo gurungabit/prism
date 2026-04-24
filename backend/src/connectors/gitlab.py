@@ -399,6 +399,43 @@ class GitLabConnector(Connector):
         has_more = bool(next_page.strip())
         return batch, has_more
 
+    def search_groups(
+        self,
+        query: str = "",
+        *,
+        page: int = 1,
+        per_page: int = 20,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Search groups via ``/groups?search=…``.
+
+        Mirrors ``search_projects`` -- with a token we scope to
+        membership-only so the dropdown shows the user's groups rather
+        than every public group on the instance. ``(groups, has_more)``.
+        """
+        params: list[str] = [
+            f"per_page={max(1, min(per_page, 100))}",
+            f"page={max(page, 1)}",
+        ]
+        if query:
+            params.append(f"search={quote(query, safe='')}")
+        if self._effective_token:
+            # Gitlab.com's group listing respects ``min_access_level`` rather
+            # than ``membership`` -- 10 = Guest, which covers anything the
+            # user can see, which is what the picker wants.
+            params.append("min_access_level=10")
+        endpoint = f"/groups?{'&'.join(params)}"
+
+        response = self._client.get(endpoint)
+        _raise_for_status(response, "group search")
+        batch = response.json()
+        if not isinstance(batch, list):
+            raise GitLabAPIError(
+                f"Expected list from /groups, got {type(batch).__name__}"
+            )
+        next_page = response.headers.get("x-next-page") or response.headers.get("X-Next-Page") or ""
+        has_more = bool(next_page.strip())
+        return batch, has_more
+
     def _list_wiki_pages(self, project_id: int) -> list[dict[str, Any]]:
         """Return wiki page stubs (slug, title, format). Content is NOT fetched here.
 

@@ -111,6 +111,16 @@ class GitLabProjectSearchBody(BaseModel):
     per_page: int = 20
 
 
+class GitLabGroupSearchBody(BaseModel):
+    """Inputs for the GitLab group-picker dropdown (whole-group ingest mode)."""
+
+    base_url: str | None = None
+    token: str | None = None
+    q: str = ""
+    page: int = 1
+    per_page: int = 20
+
+
 # ---------- orgs ----------
 
 
@@ -619,5 +629,47 @@ async def search_gitlab_projects(body: GitLabProjectSearchBody) -> dict[str, Any
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"GitLab project search failed: {e}") from e
+    finally:
+        connector.close()
+
+
+@router.post("/gitlab/groups/search")
+async def search_gitlab_groups(body: GitLabGroupSearchBody) -> dict[str, Any]:
+    """Paginated group search for the source-wizard dropdown (whole-group mode)."""
+    config: dict[str, Any] = {}
+    if body.base_url:
+        config["base_url"] = body.base_url
+
+    source = SourceConfig(
+        kind="gitlab",
+        name="group-picker",
+        config=config,
+        token=body.token,
+    )
+    connector = GitLabConnector(source)
+    try:
+        groups, has_more = connector.search_groups(
+            body.q,
+            page=body.page,
+            per_page=body.per_page,
+        )
+        return {
+            "groups": [
+                {
+                    "id": g["id"],
+                    "full_path": g.get("full_path") or g.get("path", ""),
+                    "name": g.get("name", ""),
+                    "web_url": g.get("web_url", ""),
+                }
+                for g in groups
+            ],
+            "page": body.page,
+            "per_page": body.per_page,
+            "has_more": has_more,
+        }
+    except GitLabAPIError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"GitLab group search failed: {e}") from e
     finally:
         connector.close()
