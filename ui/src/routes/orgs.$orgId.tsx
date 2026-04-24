@@ -1,35 +1,28 @@
 import { useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
-import { Plus, Users, Plug, ArrowLeft, Trash2 } from "lucide-react";
+import { Plus, Users, Plug, ArrowLeft, Pencil, Trash2 } from "lucide-react";
 
 import { Button } from "../components/shared/Button";
-import { Input, Textarea } from "../components/shared/Input";
 import { Badge } from "../components/shared/Badge";
 import { Skeleton } from "../components/shared/Skeleton";
 import { EmptyState } from "../components/shared/EmptyState";
 import { useConfirm } from "../components/shared/ConfirmDialog";
 import { DeclaredSourceRow } from "../components/sources/DeclaredSourceRow";
-import {
-  useCreateTeam,
-  useDeclaredSources,
-  useDeleteTeam,
-  useOrg,
-  useTeamsForOrg,
-} from "../hooks/useCatalog";
+import { OrgForm } from "../components/catalog/OrgForm";
+import { TeamForm } from "../components/catalog/TeamForm";
+import { useDeclaredSources, useDeleteTeam, useOrg, useTeamsForOrg } from "../hooks/useCatalog";
 
 export function OrgDetailPage() {
   const { orgId } = useParams({ strict: false }) as { orgId: string };
   const org = useOrg(orgId);
   const teams = useTeamsForOrg(orgId);
   const orgSources = useDeclaredSources({ orgId });
-  const createTeam = useCreateTeam();
   const deleteTeam = useDeleteTeam();
   const confirm = useConfirm();
 
   const [showTeamForm, setShowTeamForm] = useState(false);
-  const [teamName, setTeamName] = useState("");
-  const [teamDescription, setTeamDescription] = useState("");
-  const [formError, setFormError] = useState<string | null>(null);
+  const [editingOrg, setEditingOrg] = useState(false);
+  const [editingTeamId, setEditingTeamId] = useState<string | null>(null);
 
   const teamList = teams.data?.teams ?? [];
   const orgSourceList = orgSources.data?.sources ?? [];
@@ -70,9 +63,19 @@ export function OrgDetailPage() {
           >
             <ArrowLeft className="w-3.5 h-3.5" /> Back
           </button>
-          <h1 className="text-lg tracking-tight text-zinc-900 dark:text-zinc-100 mt-1">
-            {org.data.name}
-          </h1>
+          <div className="flex items-center gap-2 mt-1">
+            <h1 className="text-lg tracking-tight text-zinc-900 dark:text-zinc-100">
+              {org.data.name}
+            </h1>
+            <button
+              type="button"
+              onClick={() => setEditingOrg((v) => !v)}
+              className="p-1 rounded text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+              aria-label="Edit organization"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+          </div>
           <p className="text-[12px] text-zinc-400 dark:text-zinc-500 mt-1">
             Organization · {teamList.length} teams · {orgSourceList.length} org-level
             sources
@@ -86,6 +89,15 @@ export function OrgDetailPage() {
           </Link>
         </div>
       </div>
+
+      {editingOrg && (
+        <OrgForm
+          orgId={orgId}
+          initialValues={{ name: org.data.name }}
+          onSuccess={() => setEditingOrg(false)}
+          onCancel={() => setEditingOrg(false)}
+        />
+      )}
 
       {/* Teams */}
       <section className="space-y-3">
@@ -104,45 +116,12 @@ export function OrgDetailPage() {
         </div>
 
         {showTeamForm && (
-          <form
-            className="space-y-3 border border-zinc-200 dark:border-zinc-700/40 rounded-lg p-4"
-            onSubmit={async (event) => {
-              event.preventDefault();
-              setFormError(null);
-              if (!teamName.trim()) {
-                setFormError("Team name is required");
-                return;
-              }
-              try {
-                await createTeam.mutateAsync({
-                  orgId,
-                  body: { name: teamName.trim(), description: teamDescription.trim() },
-                });
-                setTeamName("");
-                setTeamDescription("");
-                setShowTeamForm(false);
-              } catch (err) {
-                setFormError(err instanceof Error ? err.message : "Failed to create team");
-              }
-            }}
-          >
-            <Input
-              label="Team name"
-              value={teamName}
-              onChange={(e) => setTeamName(e.target.value)}
-              error={formError ?? undefined}
-              autoFocus
-            />
-            <Textarea
-              label="Description"
-              value={teamDescription}
-              onChange={(e) => setTeamDescription(e.target.value)}
-              rows={2}
-            />
-            <Button type="submit" size="sm" loading={createTeam.isPending}>
-              Create
-            </Button>
-          </form>
+          <TeamForm
+            mode="create"
+            orgId={orgId}
+            onSuccess={() => setShowTeamForm(false)}
+            onCancel={() => setShowTeamForm(false)}
+          />
         )}
 
         {teams.isLoading ? (
@@ -150,43 +129,63 @@ export function OrgDetailPage() {
         ) : teamList.length > 0 ? (
           <div className="space-y-0">
             {teamList.map((team) => (
-              <div
-                key={team.id}
-                className="flex items-center justify-between py-2.5 -mx-2 px-2 rounded-md hover:bg-zinc-50 dark:hover:bg-zinc-800/30 border-b border-zinc-200/60 dark:border-zinc-700/30 last:border-0 group"
-              >
-                <Link
-                  to="/teams/$teamId"
-                  params={{ teamId: team.id }}
-                  className="flex-1 min-w-0 flex items-center gap-2"
-                >
-                  <Users className="w-4 h-4 text-zinc-400 dark:text-zinc-500" />
-                  <div>
-                    <span className="text-[13px] font-medium text-zinc-900 dark:text-zinc-100">
-                      {team.name}
-                    </span>
-                    {team.description && (
-                      <p className="text-[11px] text-zinc-400 dark:text-zinc-500 mt-0.5">
-                        {team.description}
-                      </p>
-                    )}
+              <div key={team.id}>
+                <div className="flex items-center justify-between py-2.5 -mx-2 px-2 rounded-md hover:bg-zinc-50 dark:hover:bg-zinc-800/30 border-b border-zinc-200/60 dark:border-zinc-700/30 last:border-0 group">
+                  <Link
+                    to="/teams/$teamId"
+                    params={{ teamId: team.id }}
+                    className="flex-1 min-w-0 flex items-center gap-2"
+                  >
+                    <Users className="w-4 h-4 text-zinc-400 dark:text-zinc-500" />
+                    <div>
+                      <span className="text-[13px] font-medium text-zinc-900 dark:text-zinc-100">
+                        {team.name}
+                      </span>
+                      {team.description && (
+                        <p className="text-[11px] text-zinc-400 dark:text-zinc-500 mt-0.5">
+                          {team.description}
+                        </p>
+                      )}
+                    </div>
+                  </Link>
+                  <button
+                    onClick={() => setEditingTeamId(editingTeamId === team.id ? null : team.id)}
+                    className="opacity-0 group-hover:opacity-100 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-opacity p-1"
+                    aria-label="Edit team"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: `Delete team '${team.name}'?`,
+                        message: "This cannot be undone. Services, sources, and docs under this team will be removed.",
+                        confirmLabel: "Delete team",
+                        variant: "danger",
+                      });
+                      if (!ok) return;
+                      await deleteTeam.mutateAsync(team.id);
+                    }}
+                    className="opacity-0 group-hover:opacity-100 text-zinc-400 hover:text-rose-500 transition-opacity p-1"
+                    aria-label="Delete team"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                {editingTeamId === team.id && (
+                  <div className="pb-3">
+                    <TeamForm
+                      mode="edit"
+                      teamId={team.id}
+                      initialValues={{
+                        name: team.name,
+                        description: team.description ?? "",
+                      }}
+                      onSuccess={() => setEditingTeamId(null)}
+                      onCancel={() => setEditingTeamId(null)}
+                    />
                   </div>
-                </Link>
-                <button
-                  onClick={async () => {
-                    const ok = await confirm({
-                      title: `Delete team '${team.name}'?`,
-                      message: "This cannot be undone. Services, sources, and docs under this team will be removed.",
-                      confirmLabel: "Delete team",
-                      variant: "danger",
-                    });
-                    if (!ok) return;
-                    await deleteTeam.mutateAsync(team.id);
-                  }}
-                  className="opacity-0 group-hover:opacity-100 text-zinc-400 hover:text-rose-500 transition-opacity p-1"
-                  aria-label="Delete team"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                )}
               </div>
             ))}
           </div>

@@ -1,17 +1,20 @@
+import { useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
-import { ArrowLeft, Plug, ExternalLink } from "lucide-react";
+import { ArrowLeft, ExternalLink, Pencil, Plug } from "lucide-react";
 
 import { Button } from "../components/shared/Button";
 import { Skeleton } from "../components/shared/Skeleton";
 import { EmptyState } from "../components/shared/EmptyState";
 import { Badge } from "../components/shared/Badge";
 import { DeclaredSourceRow } from "../components/sources/DeclaredSourceRow";
+import { ServiceForm } from "../components/catalog/ServiceForm";
 import { useDeclaredSources, useServiceById } from "../hooks/useCatalog";
 
 export function ServiceDetailPage() {
   const { serviceId } = useParams({ strict: false }) as { serviceId: string };
   const service = useServiceById(serviceId);
   const serviceSources = useDeclaredSources({ serviceId });
+  const [editing, setEditing] = useState(false);
 
   const sourceList = serviceSources.data?.sources ?? [];
 
@@ -50,9 +53,19 @@ export function ServiceDetailPage() {
           >
             <ArrowLeft className="w-3.5 h-3.5" /> Back
           </button>
-          <h1 className="text-lg tracking-tight text-zinc-900 dark:text-zinc-100 mt-1">
-            {service.data.name}
-          </h1>
+          <div className="flex items-center gap-2 mt-1">
+            <h1 className="text-lg tracking-tight text-zinc-900 dark:text-zinc-100">
+              {service.data.name}
+            </h1>
+            <button
+              type="button"
+              onClick={() => setEditing((v) => !v)}
+              className="p-1 rounded text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+              aria-label="Edit service"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+          </div>
           {service.data.description && (
             <p className="text-[12px] text-zinc-500 dark:text-zinc-400 mt-1 max-w-xl">
               {service.data.description}
@@ -76,6 +89,20 @@ export function ServiceDetailPage() {
           </Button>
         </Link>
       </div>
+
+      {editing && (
+        <ServiceForm
+          mode="edit"
+          serviceId={serviceId}
+          initialValues={{
+            name: service.data.name,
+            repo_url: service.data.repo_url ?? "",
+            description: service.data.description ?? "",
+          }}
+          onSuccess={() => setEditing(false)}
+          onCancel={() => setEditing(false)}
+        />
+      )}
 
       <section className="space-y-3">
         <div className="flex items-center justify-between">
