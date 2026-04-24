@@ -121,3 +121,8 @@ Skim the doc that owns the area you're touching:
 - Commit messages tight, behavior-focused. The repo's existing log is
   the style guide.
 - No emojis in source files unless explicitly asked.
+- **No `any` in TypeScript** unless genuinely unavoidable (e.g. a
+  third-party library typed as `any` upstream). Prefer `unknown` +
+  narrowing, generics, or a precise interface. If you truly need `any`,
+  leave a one-line comment justifying it. The current codebase has
+  effectively zero `any` — keep it that way.
