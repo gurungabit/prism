@@ -541,12 +541,28 @@ code, .font-mono {
   scroll-behavior: smooth;
 }
 
-.pipeline-scroll::-webkit-scrollbar {
-  display: none;
-}
+/* Thin, themed scrollbar for the pipeline strip. Hiding it entirely
+   (the old behavior) meant users on narrow screens didn't realize the
+   row was scrollable when late stages clipped off the right edge. */
 .pipeline-scroll {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(113 113 122 / 0.4) transparent;
+  scroll-behavior: smooth;
+  /* Let horizontal mouse-wheel / trackpad gestures flow naturally. */
+  overscroll-behavior-x: contain;
+}
+.pipeline-scroll::-webkit-scrollbar {
+  height: 6px;
+}
+.pipeline-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.pipeline-scroll::-webkit-scrollbar-thumb {
+  background: rgb(113 113 122 / 0.35);
+  border-radius: 3px;
+}
+.pipeline-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgb(113 113 122 / 0.6);
 }
 
 .analysis-timeline-scroll::-webkit-scrollbar {
