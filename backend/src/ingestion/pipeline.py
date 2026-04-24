@@ -249,7 +249,19 @@ class IngestionPipeline:
                 content_hash = compute_content_hash(content)
 
                 if not force:
+                    log.info(
+                        "registry_lookup_start",
+                        source=source.name,
+                        index=idx,
+                        path=ref.source_path,
+                    )
                     existing = await self.registry.get_by_path(ref.source_path)
+                    log.info(
+                        "registry_lookup_ok",
+                        source=source.name,
+                        index=idx,
+                        existed=bool(existing),
+                    )
                     if existing and existing["content_hash"] == content_hash:
                         stats["skipped"] += 1
                         continue
@@ -258,7 +270,25 @@ class IngestionPipeline:
                         # Drop the stale chunk set before re-indexing with a
                         # new document_id. The new kg_documents row (same id)
                         # is overwritten via ON CONFLICT below.
-                        delete_by_document_id(existing["document_id"], self.os_client)
+                        # delete_by_query w/ refresh=True is sync and can
+                        # block the event loop for seconds, so push to a
+                        # worker thread.
+                        log.info(
+                            "opensearch_delete_start",
+                            source=source.name,
+                            index=idx,
+                            document_id=existing["document_id"],
+                        )
+                        await asyncio.to_thread(
+                            delete_by_document_id,
+                            existing["document_id"],
+                            self.os_client,
+                        )
+                        log.info(
+                            "opensearch_delete_ok",
+                            source=source.name,
+                            index=idx,
+                        )
 
                 document_id = str(uuid.uuid4())
                 parsed_content = parse_document(raw_doc)
