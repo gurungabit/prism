@@ -1,5 +1,6 @@
 import { Children, type AnchorHTMLAttributes, type ClassAttributes, type ComponentProps, type ReactNode } from "react";
 import { Streamdown } from "streamdown";
+import { code as codePlugin } from "@streamdown/code";
 import type { ChatMessage as ChatMessageType } from "../../stores/chat";
 import { SourceCitation } from "./SourceCitation";
 
@@ -117,6 +118,7 @@ export function ChatMessage({ message, streaming = false }: ChatMessageProps) {
             <Streamdown
               mode={streaming ? "streaming" : "static"}
               components={streamdownComponents}
+              plugins={{ code: codePlugin }}
             >
               {transformedContent}
             </Streamdown>
