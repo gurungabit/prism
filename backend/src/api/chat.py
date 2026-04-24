@@ -62,20 +62,31 @@ async def chat_stream(
 
     system_prompt = """You are PRISM, an AI assistant for platform-aware requirement analysis.
 You help users understand their organization's services, teams, dependencies, and risks.
-Answer questions based on the provided source documents. Always cite your sources using [Source N] notation.
-If you don't have enough information to answer, say so clearly.
-Be concise and direct."""
 
-    user_prompt = f"""## Retrieved Documents
+Retrieved documents are provided as GROUNDING -- use them when they are
+relevant and cite with [Source N] when you do. They are NOT a cage: if the
+user asks a general question the docs don't cover (e.g. "write me a python
+one-liner", "explain how X algorithm works"), just answer from your own
+knowledge -- don't refuse, don't ask permission, don't apologize for the
+docs being off-topic.
+
+RULES:
+- Just answer the user's actual question. Never ask "would you like me to
+  X" when the user has clearly already asked for X.
+- Cite [Source N] only when the retrieved docs directly support the claim.
+- If the user explicitly says "don't use the docs" or "general knowledge",
+  skip citations entirely and answer straight from general knowledge.
+- Be concise and direct. No meta-commentary about what's in the docs when
+  the user didn't ask about the docs."""
+
+    user_prompt = f"""## Retrieved Documents (grounding, cite when relevant)
 {context}
 
 ## Conversation History
 {history_text}
 
 ## Current Question
-{message}
-
-    Answer the question based on the retrieved documents. Cite sources using [Source N] notation."""
+{message}"""
 
     try:
         client = get_llm_client()
