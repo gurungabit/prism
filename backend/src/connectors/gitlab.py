@@ -45,19 +45,36 @@ from src.observability.logging import get_logger
 log = get_logger("gitlab_connector")
 
 
-# Paths we consider "knowledge content" inside each project. Matched by
-# case-insensitive prefix or direct filename equality. Anything outside this
-# list is skipped even if it's a markdown file (e.g. node_modules/*.md).
-KNOWLEDGE_ROOT_DIRS = ("docs/", "runbooks/", "architecture/")
+# Extensions we treat as knowledge content. Any file with one of these
+# extensions is eligible regardless of directory -- a README.md buried at
+# ``packages/auth/README.md`` is just as useful as ``docs/auth.md``.
+KNOWLEDGE_EXTENSIONS = (".md", ".markdown", ".rst")
+
+# Root-level text files that are conventionally knowledge but don't carry
+# an extension from ``KNOWLEDGE_EXTENSIONS``. Matched case-insensitively
+# against the full path.
 KNOWLEDGE_ROOT_FILES = (
-    "readme.md",
-    "readme.rst",
     "readme.txt",
     "codeowners",
 )
-# Allowed extensions inside the KNOWLEDGE_ROOT_DIRS. Keeps the fetch surface
-# small: a README.md is knowledge; package-lock.json under docs/ is not.
-KNOWLEDGE_EXTENSIONS = (".md", ".rst", ".txt", ".markdown")
+
+# Directory prefixes we always skip. These are almost exclusively vendored
+# third-party code whose markdown files would dilute the knowledge base
+# with upstream release notes / contributor guides. Match is case-sensitive
+# against path segments; ``contains``-style so ``packages/foo/node_modules/``
+# is also skipped.
+VENDOR_DIR_SEGMENTS = (
+    "node_modules/",
+    "vendor/",
+    ".venv/",
+    "__pycache__/",
+    "dist/",
+    "build/",
+    ".next/",
+    ".nuxt/",
+    ".cache/",
+    "target/",   # rust/java build output
+)
 
 # Sentinel used in the ref slot of ``source_path`` to mark a wiki page. Wiki
 # pages aren't tied to a branch, so we hijack the ref field rather than adding
@@ -460,11 +477,18 @@ class GitLabConnector(Connector):
 
 
 def _is_knowledge_path(path: str) -> bool:
-    lowered = path.lower()
-    if lowered in KNOWLEDGE_ROOT_FILES:
+    # Fast reject: any vendored directory anywhere in the path.
+    lowered_path = path.lower()
+    for seg in VENDOR_DIR_SEGMENTS:
+        if seg in lowered_path:
+            return False
+    # Accept any file with a knowledge extension at any depth.
+    if any(lowered_path.endswith(ext) for ext in KNOWLEDGE_EXTENSIONS):
         return True
-    if any(lowered.startswith(prefix) for prefix in KNOWLEDGE_ROOT_DIRS):
-        return any(lowered.endswith(ext) for ext in KNOWLEDGE_EXTENSIONS)
+    # Accept conventional root-level text files without an extension check
+    # (CODEOWNERS, README.txt) -- only at the project root.
+    if lowered_path in KNOWLEDGE_ROOT_FILES:
+        return True
     return False
 
 
