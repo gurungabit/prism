@@ -180,11 +180,11 @@ export function BlastRadiusGraph({
   const onNodeClick = useCallback(
     (_event: unknown, node: Node) => {
       if (node.id === "primary") return;
-      // Tapping a team node is equivalent to tapping its edge.
-      const edgeId = Object.keys(edgeMap).find(
-        (id) => edgeMap[id]!.direction + "-" + node.id.split("-")[1] === node.id,
-      );
-      if (edgeId) setSelectedEdgeId(edgeId);
+      // Tapping a team node is equivalent to tapping its edge. Node ids are
+      // ``<direction>-<index>`` and edge ids are ``e-<direction>-<index>``,
+      // so the mapping is a straight prefix.
+      const edgeId = `e-${node.id}`;
+      if (edgeMap[edgeId]) setSelectedEdgeId(edgeId);
     },
     [edgeMap],
   );
