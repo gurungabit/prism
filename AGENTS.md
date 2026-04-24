@@ -1,39 +1,82 @@
 # AGENTS.md
 
-Entry point for AI agents (Claude Code, Cursor, OpenAI Codex CLI,
-Aider, etc.) contributing to this repo.
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with
+project-specific instructions in [`CLAUDE.md`](CLAUDE.md) and the docs
+index in [`docs/README.md`](docs/README.md).
 
-## Read this first
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial
+tasks, use judgment.
 
-All operational notes — repo shape, hot spots, required habits, the
-"update docs in the same commit" rule — live in
-[`CLAUDE.md`](CLAUDE.md). This file just points there so agents that
-look for `AGENTS.md` by convention land in the right place.
+## 1. Think Before Coding
 
-If you're an AI agent: **load `CLAUDE.md` and `docs/README.md` before
-making non-trivial changes**. The docs index in `docs/README.md` tells
-you which doc owns which subsystem so you can scan the right one.
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
 
-## Quick map
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them — don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
 
-| Where | What's there |
-|---|---|
-| [`CLAUDE.md`](CLAUDE.md) | Working rules, hot spots, style notes |
-| [`docs/README.md`](docs/README.md) | Doc index — every internal-design doc and what it covers |
-| [`docs/architecture.md`](docs/architecture.md) | System topology + declared ownership model |
-| [`docs/agents.md`](docs/agents.md) | LangGraph orchestrator + per-agent responsibilities |
-| [`docs/data-flow.md`](docs/data-flow.md) | Ingestion + retrieval pipelines |
-| [`docs/threading.md`](docs/threading.md) | Multi-turn analysis: titles, transcripts, reruns |
-| [`docs/api.md`](docs/api.md) | REST + SSE endpoint reference |
-| [`docs/deployment.md`](docs/deployment.md) | Local stack, env vars, ops |
-| [`docs/development.md`](docs/development.md) | Project layout + extension points |
+## 2. Simplicity First
 
-## House rules (short version)
+**Minimum code that solves the problem. Nothing speculative.**
 
-- Update the docs in the same commit when you change behavior the docs
-  cover. See [`CLAUDE.md`](CLAUDE.md) for the full list.
-- Reuse existing shared components before creating new ones — see
-  `ui/src/components/catalog/` and `ui/src/components/sources/` first.
-- Don't seed data silently to verify features; ask first or clean up
-  after yourself.
-- Verify UI changes in the running preview, not just from the diff.
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If
+yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it — don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make
+it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs,
+fewer rewrites due to overcomplication, and clarifying questions come
+before implementation rather than after mistakes.
+
+## Project-specific reading
+
+After loading this file, also read:
+
+- [`CLAUDE.md`](CLAUDE.md) — repo-specific working notes (hot spots,
+  required habits like updating docs in the same commit, code style).
+- [`docs/README.md`](docs/README.md) — map of every internal-design doc
+  and which subsystem it owns.
