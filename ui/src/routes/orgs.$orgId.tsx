@@ -130,7 +130,7 @@ export function OrgDetailPage() {
           <div className="space-y-0">
             {teamList.map((team) => (
               <div key={team.id}>
-                <div className="flex items-center justify-between py-2.5 -mx-2 px-2 rounded-md hover:bg-zinc-50 dark:hover:bg-zinc-800/30 border-b border-zinc-200/60 dark:border-zinc-700/30 last:border-0 group">
+                <div className="flex items-center justify-between py-2.5 -mx-2 px-2 rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800/30 border-b border-zinc-200/60 dark:border-zinc-700/30 last:border-0 group">
                   <Link
                     to="/teams/$teamId"
                     params={{ teamId: team.id }}

@@ -1690,7 +1690,7 @@ function FullTurnCard({
       <button
         type="button"
         onClick={onToggle}
-        className="w-full text-left px-4 py-3 flex items-start gap-3 hover:bg-zinc-50 dark:hover:bg-zinc-800/30 transition-colors"
+        className="w-full text-left px-4 py-3 flex items-start gap-3 hover:bg-zinc-100 dark:hover:bg-zinc-800/30 transition-colors"
       >
         <ChevronRight
           className={`w-3.5 h-3.5 text-zinc-400 dark:text-zinc-500 mt-1 flex-shrink-0 transition-transform ${

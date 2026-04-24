@@ -213,7 +213,7 @@ export function DashboardPage() {
                 key={team.team_id ?? team.team}
                 to={team.team_id ? "/teams/$teamId" : "/"}
                 params={team.team_id ? { teamId: team.team_id } : undefined}
-                className="flex items-center justify-between py-2.5 -mx-2 px-2 rounded-md transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-800/30 border-b border-zinc-200/60 dark:border-zinc-700/30 last:border-0 group"
+                className="flex items-center justify-between py-2.5 -mx-2 px-2 rounded-md transition-colors hover:bg-zinc-100 dark:hover:bg-zinc-800/30 border-b border-zinc-200/60 dark:border-zinc-700/30 last:border-0 group"
               >
                 <div className="flex items-center gap-2 min-w-0">
                   <Users className="w-3.5 h-3.5 text-zinc-400 dark:text-zinc-500" />
@@ -280,7 +280,7 @@ export function DashboardPage() {
                 key={thread.thread_id}
                 to="/analyze/$runId"
                 params={{ runId: thread.thread_id }}
-                className="flex items-center justify-between py-2.5 -mx-2 px-2 rounded-md hover:bg-zinc-50 dark:hover:bg-zinc-800/30 transition-colors group"
+                className="flex items-center justify-between py-2.5 -mx-2 px-2 rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800/30 transition-colors group"
               >
                 <div className="flex-1 min-w-0 mr-3">
                   <p className="text-[12px] text-zinc-700 dark:text-zinc-300 truncate group-hover:text-[var(--color-accent)] dark:group-hover:text-[var(--color-accent-dark)] transition-colors">

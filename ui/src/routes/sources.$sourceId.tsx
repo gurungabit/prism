@@ -187,7 +187,7 @@ export function SourceDetailPage() {
               // source_url column was added -- fall back to non-clickable.
               const href = typeof doc.source_url === "string" ? doc.source_url : "";
               const rowClasses =
-                "flex items-center justify-between py-2 px-2 -mx-2 rounded-md hover:bg-zinc-50 dark:hover:bg-zinc-800/30 border-b border-zinc-200/60 dark:border-zinc-700/30 last:border-0";
+                "flex items-center justify-between py-2 px-2 -mx-2 rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800/30 border-b border-zinc-200/60 dark:border-zinc-700/30 last:border-0";
 
               const rowContent = (
                 <>

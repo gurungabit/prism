@@ -53,7 +53,7 @@ export function DeclaredSourceRow({ source }: DeclaredSourceRowProps) {
     <Link
       to="/sources/$sourceId"
       params={{ sourceId: source.id }}
-      className="flex items-center justify-between py-3 -mx-2 px-2 rounded-md hover:bg-zinc-50 dark:hover:bg-zinc-800/30 border-b border-zinc-200/60 dark:border-zinc-700/30 last:border-0 group"
+      className="flex items-center justify-between py-3 -mx-2 px-2 rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800/30 border-b border-zinc-200/60 dark:border-zinc-700/30 last:border-0 group"
     >
       <div className="flex items-center gap-3 min-w-0">
         <Plug className="w-4 h-4 text-zinc-400 dark:text-zinc-500 flex-shrink-0" />

@@ -54,7 +54,7 @@ export function ResultCard({ result, query = "" }: ResultCardProps) {
       tabIndex={0}
       onClick={() => setExpanded(!expanded)}
       onKeyDown={(e) => e.key === "Enter" && setExpanded(!expanded)}
-      className="py-3 border-b border-zinc-100 dark:border-zinc-800/30 last:border-0 cursor-pointer hover:bg-zinc-50/50 dark:hover:bg-zinc-800/20 -mx-2 px-2 rounded-md transition-colors"
+      className="py-3 border-b border-zinc-100 dark:border-zinc-800/30 last:border-0 cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800/20 -mx-2 px-2 rounded-md transition-colors"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
