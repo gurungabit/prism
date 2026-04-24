@@ -218,7 +218,7 @@ export function NewSourcePage() {
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg border text-left transition-colors ${
                   scope === "org" && scopeId === org.id
                     ? "border-[var(--color-accent)] bg-[var(--color-accent-muted)] dark:bg-[var(--color-accent-dark-muted)]"
-                    : "border-zinc-200 dark:border-zinc-700/40 hover:bg-zinc-50 dark:hover:bg-zinc-800/30"
+                    : "border-zinc-200 dark:border-zinc-700/40 hover:bg-zinc-100 dark:hover:bg-zinc-800/30"
                 }`}
               >
                 <Building2 className="w-4 h-4 text-zinc-400" />
@@ -550,7 +550,7 @@ function KindCard({
       className={`text-left rounded-lg border px-4 py-3 transition-colors ${
         active
           ? "border-[var(--color-accent)] bg-[var(--color-accent-muted)] dark:bg-[var(--color-accent-dark-muted)]"
-          : "border-zinc-200 dark:border-zinc-700/40 hover:bg-zinc-50 dark:hover:bg-zinc-800/30"
+          : "border-zinc-200 dark:border-zinc-700/40 hover:bg-zinc-100 dark:hover:bg-zinc-800/30"
       }`}
     >
       <div className="flex items-center justify-between">
@@ -594,7 +594,7 @@ function ScopeTeamRow({
           className={`flex-1 flex items-center gap-3 px-4 py-2 text-left transition-colors ${
             selectedScope === "team" && selectedScopeId === teamId
               ? "bg-[var(--color-accent-muted)] dark:bg-[var(--color-accent-dark-muted)] rounded-l-lg"
-              : "hover:bg-zinc-50 dark:hover:bg-zinc-800/30 rounded-l-lg"
+              : "hover:bg-zinc-100 dark:hover:bg-zinc-800/30 rounded-l-lg"
           }`}
         >
           <Users className="w-3.5 h-3.5 text-zinc-400" />
@@ -634,7 +634,7 @@ function ScopeTeamRow({
                   className={`w-full flex items-center gap-2 px-2 py-1.5 text-left rounded-md transition-colors ${
                     selectedScope === "service" && selectedScopeId === svc.id
                       ? "bg-[var(--color-accent-muted)] dark:bg-[var(--color-accent-dark-muted)]"
-                      : "hover:bg-zinc-50 dark:hover:bg-zinc-800/30"
+                      : "hover:bg-zinc-100 dark:hover:bg-zinc-800/30"
                   }`}
                 >
                   <Boxes className="w-3 h-3 text-zinc-400" />
