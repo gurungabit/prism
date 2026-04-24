@@ -145,7 +145,6 @@ class GitLabConnector(Connector):
             return []
 
         refs: list[DocumentRef] = []
-        max_docs_per_project = settings.gitlab_max_docs_per_project
         include_wiki = bool(self.source.config.get("include_wiki", True))
 
         for project in projects:
@@ -196,15 +195,6 @@ class GitLabConnector(Connector):
                             file_type=file_type,
                         )
                     )
-
-            if len(project_refs) > max_docs_per_project:
-                log.warning(
-                    "gitlab_project_doc_cap_applied",
-                    project=project_path,
-                    cap=max_docs_per_project,
-                    found=len(project_refs),
-                )
-                project_refs = project_refs[:max_docs_per_project]
 
             refs.extend(project_refs)
 
@@ -448,7 +438,7 @@ class GitLabConnector(Connector):
             f"?with_content=false&per_page=100"
         )
         try:
-            return self._paginate(endpoint, limit=settings.gitlab_max_docs_per_project)
+            return self._paginate(endpoint)
         except GitLabAPIError as e:
             log.info("gitlab_wiki_unavailable", project_id=project_id, error=str(e)[:200])
             return []
@@ -495,11 +485,11 @@ class GitLabConnector(Connector):
             log.debug("gitlab_last_commit_failed", path=path, error=str(e)[:200])
             return None
 
-    def _paginate(self, path: str, *, limit: int) -> list[dict[str, Any]]:
-        """Follow rel=next pagination links until exhausted or ``limit`` hit."""
+    def _paginate(self, path: str, *, limit: int | None = None) -> list[dict[str, Any]]:
+        """Follow rel=next pagination links until exhausted (or ``limit`` if set)."""
         results: list[dict[str, Any]] = []
         current = path
-        while current and len(results) < limit:
+        while current and (limit is None or len(results) < limit):
             response = self._client.get(current)
             _raise_for_status(response, current)
             batch = response.json()
@@ -507,7 +497,7 @@ class GitLabConnector(Connector):
                 raise GitLabAPIError(f"Expected list from {current}, got {type(batch).__name__}")
             results.extend(batch)
             current = _next_page_url(response)
-        return results[:limit]
+        return results[:limit] if limit is not None else results
 
 
 # ---------- module-level helpers ----------
