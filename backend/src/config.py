@@ -23,10 +23,10 @@ class Settings(BaseSettings):
     # Secret so it can be passed through httpx headers directly.
     gitlab_token: str = ""
     gitlab_request_timeout_seconds: float = 30.0
-    # Hard cap on docs fetched per source per ingest run. Prevents a run-away
-    # group with thousands of projects from swamping the pipeline in Phase 1.
+    # Cap on number of projects walked when ingesting a whole-group source.
+    # Per-project doc count is uncapped -- pull every knowledge file in the
+    # repo regardless of size.
     gitlab_max_projects_per_source: int = 200
-    gitlab_max_docs_per_project: int = 50
 
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_dimension: int = 384
