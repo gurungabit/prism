@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createOrg,
@@ -227,17 +228,39 @@ export function useDeclaredSource(sourceId: string | undefined) {
 }
 
 export function useSourceStatus(sourceId: string | undefined, enabled = true) {
-  return useQuery({
+  const qc = useQueryClient();
+  const prevStatusRef = useRef<string | null>(null);
+  const query = useQuery({
     queryKey: ["declared-source-status", sourceId],
     queryFn: () => getSourceStatus(sourceId!),
     enabled: !!sourceId && enabled,
-    refetchInterval: (query) => {
+    refetchInterval: (q) => {
       // Poll every 3s while the source is actively syncing so the UI moves
       // off "Syncing..." without a manual refresh. Stop once it settles.
-      const status = query.state.data?.status;
+      const status = q.state.data?.status;
       return status === "syncing" || status === "pending" ? 3_000 : false;
     },
   });
+
+  useEffect(() => {
+    const current = query.data?.status;
+    if (!current || !sourceId) return;
+    const prev = prevStatusRef.current;
+    // Transition from active (syncing/pending) to settled (ready/error)
+    // means ``document_count`` and ``documents`` are now stale on the
+    // detail view. Invalidate so they refetch without a manual reload.
+    if (
+      (prev === "syncing" || prev === "pending") &&
+      current !== "syncing" &&
+      current !== "pending"
+    ) {
+      qc.invalidateQueries({ queryKey: ["declared-source", sourceId] });
+      qc.invalidateQueries({ queryKey: ["declared-sources"] });
+    }
+    prevStatusRef.current = current;
+  }, [query.data?.status, sourceId, qc]);
+
+  return query;
 }
 
 export function useCreateSource() {
