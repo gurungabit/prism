@@ -31,7 +31,7 @@ Design notes:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -317,11 +317,22 @@ class GitLabConnector(Connector):
 
     def _list_group_projects(self, group_path: str, *, include_subgroups: bool) -> list[dict[str, Any]]:
         encoded = quote(group_path, safe="")
-        endpoint = (
-            f"/groups/{encoded}/projects"
-            f"?include_subgroups={'true' if include_subgroups else 'false'}"
-            "&per_page=100&archived=false&order_by=last_activity_at"
-        )
+        params = [
+            f"include_subgroups={'true' if include_subgroups else 'false'}",
+            "per_page=100",
+            "archived=false",
+            "order_by=last_activity_at",
+        ]
+        # Skip dormant projects -- avoids ingesting old experimental forks
+        # that haven't been touched in months. ``last_activity_at`` covers
+        # commits, MRs, issues, releases, etc. -- the standard "active"
+        # signal in GitLab. Set ``gitlab_group_active_window_days = 0`` in
+        # settings to disable.
+        active_days = settings.gitlab_group_active_window_days
+        if active_days and active_days > 0:
+            cutoff = datetime.now(tz=timezone.utc) - timedelta(days=active_days)
+            params.append(f"last_activity_after={cutoff.isoformat()}")
+        endpoint = f"/groups/{encoded}/projects?{'&'.join(params)}"
         return self._paginate(endpoint, limit=settings.gitlab_max_projects_per_source)
 
     def _list_knowledge_paths(self, project_id: int, ref: str) -> list[str]:

@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     # Per-project doc count is uncapped -- pull every knowledge file in the
     # repo regardless of size.
     gitlab_max_projects_per_source: int = 200
+    # When ingesting a whole group, skip projects with no activity in the
+    # last N days. Mirrors GitLab's "active" filter -- avoids spending
+    # ingest budget on dormant / archived-but-not-flagged repos. Set to 0
+    # to disable the filter and walk every project.
+    gitlab_group_active_window_days: int = 30
 
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_dimension: int = 384
