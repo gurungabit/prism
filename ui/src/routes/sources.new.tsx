@@ -17,6 +17,7 @@ import { Badge } from "../components/shared/Badge";
 import { EmptyState } from "../components/shared/EmptyState";
 import { Skeleton } from "../components/shared/Skeleton";
 import { GitlabProjectSelect } from "../components/sources/GitlabProjectSelect";
+import { GitlabGroupSelect } from "../components/sources/GitlabGroupSelect";
 import { TeamForm } from "../components/catalog/TeamForm";
 import { ServiceForm } from "../components/catalog/ServiceForm";
 import {
@@ -396,12 +397,7 @@ export function NewSourcePage() {
                 </>
               ) : (
                 <>
-                  <Input
-                    label="Group path"
-                    placeholder="platform-team"
-                    value={groupPath}
-                    onChange={(e) => setGroupPath(e.target.value)}
-                  />
+                  <GitlabGroupSelect value={groupPath} onChange={setGroupPath} />
                   <label className="flex items-center gap-2 text-[12px] text-zinc-600 dark:text-zinc-400">
                     <input
                       type="checkbox"

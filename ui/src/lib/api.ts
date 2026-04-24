@@ -516,6 +516,25 @@ export function searchGitlabProjects(body: SearchGitlabProjectsBody) {
   });
 }
 
+export interface GitLabGroup {
+  id: number;
+  full_path: string;
+  name: string;
+  web_url: string;
+}
+
+export function searchGitlabGroups(body: SearchGitlabProjectsBody) {
+  return request<{
+    groups: GitLabGroup[];
+    page: number;
+    per_page: number;
+    has_more: boolean;
+  }>("/api/gitlab/groups/search", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 // ── Chat ─────────────────────────────────────────────
 
 export interface ChatConversation {
