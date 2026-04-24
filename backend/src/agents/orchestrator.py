@@ -212,6 +212,7 @@ async def plan_node(state: OrchestratorState) -> dict:
             "question_type": plan.question_type,
             "agents_to_run": agents,
             "reasoning": plan.reasoning,
+            "effective_requirement": plan.effective_requirement,
         }
     except Exception as e:  # noqa: BLE001
         log.warning("plan_llm_failed", analysis_id=analysis_id, error=str(e))
@@ -269,19 +270,32 @@ async def plan_node(state: OrchestratorState) -> dict:
             }
         )
 
-    return checkpoint_safe_update(
-        {
-            "plan": plan_dict,
-            "agent_trace": [
-                {
-                    "agent": "orchestrator",
-                    "action": "plan",
-                    "timestamp": time.time(),
-                    "data": plan_dict,
-                }
-            ],
-        }
-    )
+    # "Rerun" follow-ups: the planner can rewrite the requirement to the
+    # original turn-1 question so downstream agents analyze the real problem
+    # instead of the literal "run this again" prose. Only swap if the planner
+    # returned something non-trivial and actually different.
+    update: dict = {
+        "plan": plan_dict,
+        "agent_trace": [
+            {
+                "agent": "orchestrator",
+                "action": "plan",
+                "timestamp": time.time(),
+                "data": plan_dict,
+            }
+        ],
+    }
+    effective = (plan_dict.get("effective_requirement") or "").strip()
+    if effective and effective != requirement.strip():
+        log.info(
+            "plan_rewrote_requirement",
+            analysis_id=analysis_id,
+            original=requirement[:80],
+            effective=effective[:80],
+        )
+        update["requirement"] = effective
+
+    return checkpoint_safe_update(update)
 
 
 def _agent_enabled(state: OrchestratorState, key: str) -> bool:

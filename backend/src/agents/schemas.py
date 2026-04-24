@@ -179,6 +179,11 @@ class PlanOutput(BaseModel):
     question_type: QuestionType
     agents_to_run: list[PlanAgentKey]
     reasoning: str = ""
+    # When the follow-up is a meta-command like "run this again" or "rerun the
+    # analysis", the planner sets this to the original thread requirement so
+    # downstream agents work off the real question rather than the literal
+    # follow-up prose. Empty/None => use the current turn's requirement as-is.
+    effective_requirement: str | None = None
 
 
 class ChatAnswerOutput(BaseModel):
