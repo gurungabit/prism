@@ -39,7 +39,13 @@ async def risk_effort_agent(state: dict[str, Any]) -> dict[str, Any]:
     chunks_text = _format_chunks(ranked_chunks)
 
     try:
-        prompt = build_risk_effort_prompt(requirement, chunks_text, services_text, teams_text)
+        prompt = build_risk_effort_prompt(
+            requirement,
+            chunks_text,
+            services_text,
+            teams_text,
+            thread_transcript=state.get("thread_transcript") or "",
+        )
 
         risk_output = await llm_call(
             prompt=prompt,

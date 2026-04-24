@@ -95,6 +95,9 @@ class OrchestratorState(TypedDict):
     # {requirement, kind, rolling_summary, report, retrieved_chunks}.
     # Empty list for first-turn runs.
     prior_turns: list
+    # Rendered prior-turn transcript the planner computes once and every
+    # downstream agent reuses verbatim. Empty string for first-turn runs.
+    thread_transcript: str
     team_routing: AgentResult | None
     dependencies: AgentResult | None
     risk_assessment: AgentResult | None
@@ -276,6 +279,9 @@ async def plan_node(state: OrchestratorState) -> dict:
     # returned something non-trivial and actually different.
     update: dict = {
         "plan": plan_dict,
+        # Stash the transcript so downstream agents don't have to recompute
+        # it. Empty string when there are no prior turns.
+        "thread_transcript": transcript,
         "agent_trace": [
             {
                 "agent": "orchestrator",
@@ -294,6 +300,22 @@ async def plan_node(state: OrchestratorState) -> dict:
             effective=effective[:80],
         )
         update["requirement"] = effective
+        # Agents read ``analysis_brief`` first; it's built once at session
+        # start so it still holds the literal follow-up text. Rebuild it
+        # off the rewritten requirement while preserving any optional
+        # context fields the user supplied on this turn.
+        input_dict = dict(state.get("analysis_input") or {})
+        input_dict["requirement"] = effective
+        try:
+            rebuilt_input = AnalysisInput.model_validate(input_dict)
+            update["analysis_input"] = rebuilt_input.model_dump()
+            update["analysis_brief"] = build_analysis_brief(rebuilt_input)
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "plan_rebuild_brief_failed",
+                analysis_id=analysis_id,
+                error=str(e),
+            )
 
     return checkpoint_safe_update(update)
 
@@ -539,6 +561,7 @@ async def synthesize_node(state: OrchestratorState) -> dict:
             coverage=json.dumps(_result_data(coverage), default=str),
             citations=json.dumps(_result_data(citations), default=str),
             conflicts=json.dumps(conflicts, default=str),
+            thread_transcript=state.get("thread_transcript") or "",
         )
 
         synthesis = await llm_call(
