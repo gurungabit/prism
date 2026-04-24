@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Plus } from "lucide-react";
 
 import { Button } from "../shared/Button";
 import { Input, Textarea } from "../shared/Input";
@@ -102,35 +101,3 @@ export function TeamForm({
   );
 }
 
-// Tiny inline-confirm button row used by the source wizard's "+ Add team"
-// path. Renders a single Add toggle, then expands to the shared
-// ``TeamForm`` (compact variant) so fields stay consistent with the
-// detail-page flow.
-export function InlineAddTeam({ orgId }: { orgId: string }) {
-  const [open, setOpen] = useState(false);
-
-  if (!open) {
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="inline-flex items-center gap-1 text-[11px] text-zinc-500 hover:text-[var(--color-accent)] dark:text-zinc-400 dark:hover:text-[var(--color-accent-dark)]"
-      >
-        <Plus className="w-3 h-3" />
-        Add team
-      </button>
-    );
-  }
-
-  return (
-    <div className="w-full">
-      <TeamForm
-        mode="create"
-        orgId={orgId}
-        compact
-        onSuccess={() => setOpen(false)}
-        onCancel={() => setOpen(false)}
-      />
-    </div>
-  );
-}

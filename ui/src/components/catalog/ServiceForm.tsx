@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Plus } from "lucide-react";
 
 import { Button } from "../shared/Button";
 import { Input, Textarea } from "../shared/Input";
@@ -116,31 +115,3 @@ export function ServiceForm({
   );
 }
 
-export function InlineAddService({ teamId }: { teamId: string }) {
-  const [open, setOpen] = useState(false);
-
-  if (!open) {
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="inline-flex items-center gap-1 px-2 py-1 text-[11px] text-zinc-500 hover:text-[var(--color-accent)] dark:text-zinc-400 dark:hover:text-[var(--color-accent-dark)]"
-      >
-        <Plus className="w-3 h-3" />
-        Add service
-      </button>
-    );
-  }
-
-  return (
-    <div className="w-full px-2 py-1">
-      <ServiceForm
-        mode="create"
-        teamId={teamId}
-        compact
-        onSuccess={() => setOpen(false)}
-        onCancel={() => setOpen(false)}
-      />
-    </div>
-  );
-}

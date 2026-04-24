@@ -17,8 +17,8 @@ import { Badge } from "../components/shared/Badge";
 import { EmptyState } from "../components/shared/EmptyState";
 import { Skeleton } from "../components/shared/Skeleton";
 import { GitlabProjectSelect } from "../components/sources/GitlabProjectSelect";
-import { InlineAddTeam } from "../components/catalog/TeamForm";
-import { InlineAddService } from "../components/catalog/ServiceForm";
+import { TeamForm } from "../components/catalog/TeamForm";
+import { ServiceForm } from "../components/catalog/ServiceForm";
 import {
   useCreateSource,
   useOrgs,
@@ -54,6 +54,7 @@ export function NewSourcePage() {
   const [step, setStep] = useState<Step>(prefill.scope && prefill.scopeId ? 2 : 1);
   const [scope, setScope] = useState<SourceScope>(prefill.scope ?? "service");
   const [scopeId, setScopeId] = useState<string>(prefill.scopeId ?? "");
+  const [addingTeam, setAddingTeam] = useState(false);
 
   const [kind, setKind] = useState<SourceKind>("gitlab");
   const [sourceName, setSourceName] = useState("");
@@ -234,13 +235,27 @@ export function NewSourcePage() {
             ))}
           </div>
 
-          <div className="space-y-1">
-            <div className="flex items-center justify-between mt-4">
+          <div className="space-y-3 mt-4">
+            <div className="flex items-center justify-between">
               <p className="text-[11px] uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
                 Teams
               </p>
-              <InlineAddTeam orgId={firstOrg.id} />
+              <button
+                type="button"
+                onClick={() => setAddingTeam((v) => !v)}
+                className="inline-flex items-center gap-1 text-[11px] text-zinc-500 hover:text-[var(--color-accent)] dark:text-zinc-400 dark:hover:text-[var(--color-accent-dark)]"
+              >
+                {addingTeam ? "Cancel" : "+ Add team"}
+              </button>
             </div>
+            {addingTeam && (
+              <TeamForm
+                mode="create"
+                orgId={firstOrg.id}
+                onSuccess={() => setAddingTeam(false)}
+                onCancel={() => setAddingTeam(false)}
+              />
+            )}
             {teamsQuery.isLoading ? (
               <Skeleton className="h-10 w-full" />
             ) : teamList.length === 0 ? (
@@ -568,6 +583,7 @@ function ScopeTeamRow({
 }) {
   const services = useServicesForTeam(teamId);
   const [expanded, setExpanded] = useState(false);
+  const [addingService, setAddingService] = useState(false);
 
   return (
     <div className="border border-zinc-200/80 dark:border-zinc-700/40 rounded-lg">
@@ -630,7 +646,24 @@ function ScopeTeamRow({
               ))}
             </div>
           )}
-          <InlineAddService teamId={teamId} />
+          <div className="pt-1">
+            {addingService ? (
+              <ServiceForm
+                mode="create"
+                teamId={teamId}
+                onSuccess={() => setAddingService(false)}
+                onCancel={() => setAddingService(false)}
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => setAddingService(true)}
+                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] text-zinc-500 hover:text-[var(--color-accent)] dark:text-zinc-400 dark:hover:text-[var(--color-accent-dark)]"
+              >
+                + Add service
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>
