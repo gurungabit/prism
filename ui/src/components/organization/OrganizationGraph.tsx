@@ -244,7 +244,7 @@ export function OrganizationGraph({ data, onSelect }: OrganizationGraphProps) {
   return (
     <div
       ref={fullscreenRef}
-      className={`w-full ${isFullscreen ? "h-screen rounded-none border-0" : "h-[calc(100vh-120px)] rounded-lg border border-zinc-200 dark:border-zinc-700/40"} bg-white dark:bg-[#171719]`}
+      className={`w-full ${isFullscreen ? "h-screen rounded-none border-0" : "h-[520px] rounded-lg border border-zinc-200 dark:border-zinc-700/40"} bg-white dark:bg-[#171719]`}
     >
       <ReactFlow
         nodes={nodes}
