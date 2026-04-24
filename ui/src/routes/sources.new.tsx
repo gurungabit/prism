@@ -6,9 +6,12 @@ import {
   Building2,
   CheckCircle2,
   CircleAlert,
+  Loader2,
+  Plus,
   Users,
   Boxes,
   Plug,
+  X,
 } from "lucide-react";
 
 import { Button } from "../components/shared/Button";
@@ -18,7 +21,9 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { Skeleton } from "../components/shared/Skeleton";
 import { GitlabProjectSelect } from "../components/sources/GitlabProjectSelect";
 import {
+  useCreateService,
   useCreateSource,
+  useCreateTeam,
   useOrgs,
   useServicesForTeam,
   useTeamsForOrg,
@@ -233,21 +238,17 @@ export function NewSourcePage() {
           </div>
 
           <div className="space-y-1">
-            <p className="text-[11px] uppercase tracking-wider text-zinc-400 dark:text-zinc-500 mt-4">
-              Teams
-            </p>
+            <div className="flex items-center justify-between mt-4">
+              <p className="text-[11px] uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+                Teams
+              </p>
+              <InlineAddTeam orgId={firstOrg.id} />
+            </div>
             {teamsQuery.isLoading ? (
               <Skeleton className="h-10 w-full" />
             ) : teamList.length === 0 ? (
               <p className="text-[12px] text-zinc-400 dark:text-zinc-500">
-                No teams yet.{" "}
-                <Link
-                  to="/orgs/$orgId"
-                  params={{ orgId: firstOrg.id }}
-                  className="text-[var(--color-accent)] dark:text-[var(--color-accent-dark)] hover:underline"
-                >
-                  Create one
-                </Link>
+                No teams yet — use "+ Add team" above to create one.
               </p>
             ) : (
               teamList.map((team) => (
@@ -603,7 +604,7 @@ function ScopeTeamRow({
         </button>
       </div>
       {expanded && (
-        <div className="border-t border-zinc-200/60 dark:border-zinc-700/30 px-4 py-2">
+        <div className="border-t border-zinc-200/60 dark:border-zinc-700/30 px-4 py-2 space-y-2">
           {services.isLoading ? (
             <Skeleton className="h-8 w-full" />
           ) : (services.data?.services ?? []).length === 0 ? (
@@ -632,7 +633,187 @@ function ScopeTeamRow({
               ))}
             </div>
           )}
+          <InlineAddService teamId={teamId} />
         </div>
+      )}
+    </div>
+  );
+}
+
+// ── Inline add-team + add-service forms ────────────────────────────────────
+// These live in the source wizard rather than only on the org/team detail
+// pages so the user can bootstrap missing catalog entries without
+// interrupting the flow. They collapse to a small "+ Add" button when idle.
+
+function InlineAddTeam({ orgId }: { orgId: string }) {
+  const createTeam = useCreateTeam();
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setError(null);
+    try {
+      await createTeam.mutateAsync({
+        orgId,
+        body: { name: trimmed, description: "" },
+      });
+      setName("");
+      setOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create team");
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="inline-flex items-center gap-1 text-[11px] text-zinc-500 hover:text-[var(--color-accent)] dark:text-zinc-400 dark:hover:text-[var(--color-accent-dark)]"
+      >
+        <Plus className="w-3 h-3" />
+        Add team
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <input
+        type="text"
+        autoFocus
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            void submit();
+          } else if (e.key === "Escape") {
+            setOpen(false);
+            setName("");
+            setError(null);
+          }
+        }}
+        placeholder="Team name"
+        className="rounded-md border border-zinc-200 dark:border-zinc-600/50 bg-white dark:bg-[#1e1e20] text-[12px] px-2 py-1 outline-none focus:border-[var(--color-accent)] dark:focus:border-[var(--color-accent-dark)]"
+      />
+      <button
+        type="button"
+        onClick={submit}
+        disabled={!name.trim() || createTeam.isPending}
+        className="p-1 rounded text-[var(--color-accent)] dark:text-[var(--color-accent-dark)] disabled:opacity-40"
+        aria-label="Create team"
+      >
+        {createTeam.isPending ? (
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+        ) : (
+          <CheckCircle2 className="w-3.5 h-3.5" />
+        )}
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setOpen(false);
+          setName("");
+          setError(null);
+        }}
+        className="p-1 rounded text-zinc-400 hover:text-zinc-600"
+        aria-label="Cancel"
+      >
+        <X className="w-3.5 h-3.5" />
+      </button>
+      {error && (
+        <span className="text-[10px] text-rose-600 dark:text-rose-400 ml-1">{error}</span>
+      )}
+    </div>
+  );
+}
+
+function InlineAddService({ teamId }: { teamId: string }) {
+  const createService = useCreateService();
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setError(null);
+    try {
+      await createService.mutateAsync({
+        teamId,
+        body: { name: trimmed, repo_url: "", description: "" },
+      });
+      setName("");
+      setOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create service");
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="inline-flex items-center gap-1 px-2 py-1 text-[11px] text-zinc-500 hover:text-[var(--color-accent)] dark:text-zinc-400 dark:hover:text-[var(--color-accent-dark)]"
+      >
+        <Plus className="w-3 h-3" />
+        Add service
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1.5 px-2 py-1">
+      <input
+        type="text"
+        autoFocus
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            void submit();
+          } else if (e.key === "Escape") {
+            setOpen(false);
+            setName("");
+            setError(null);
+          }
+        }}
+        placeholder="Service name"
+        className="flex-1 rounded-md border border-zinc-200 dark:border-zinc-600/50 bg-white dark:bg-[#1e1e20] text-[12px] px-2 py-1 outline-none focus:border-[var(--color-accent)] dark:focus:border-[var(--color-accent-dark)]"
+      />
+      <button
+        type="button"
+        onClick={submit}
+        disabled={!name.trim() || createService.isPending}
+        className="p-1 rounded text-[var(--color-accent)] dark:text-[var(--color-accent-dark)] disabled:opacity-40"
+        aria-label="Create service"
+      >
+        {createService.isPending ? (
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+        ) : (
+          <CheckCircle2 className="w-3.5 h-3.5" />
+        )}
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setOpen(false);
+          setName("");
+          setError(null);
+        }}
+        className="p-1 rounded text-zinc-400 hover:text-zinc-600"
+        aria-label="Cancel"
+      >
+        <X className="w-3.5 h-3.5" />
+      </button>
+      {error && (
+        <span className="text-[10px] text-rose-600 dark:text-rose-400 ml-1">{error}</span>
       )}
     </div>
   );
