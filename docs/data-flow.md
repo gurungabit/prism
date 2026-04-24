@@ -71,12 +71,11 @@ graph LR
         DD["Deduplicator"]
         SCP["Stamp scope<br/>(org_id, team_id, service_id)"]
         EM["Embedder"]
-        EE["Entity Extraction<br/>(service deps only)"]
     end
 
     subgraph STORE["Storage"]
         OS[(OpenSearch)]
-        PG[(PostgreSQL<br/>kg_documents + dependencies + registry)]
+        PG[(PostgreSQL<br/>kg_documents + registry)]
     end
 
     S --> GL
@@ -88,7 +87,6 @@ graph LR
     EX --> P
     ON --> P
     P --> FT --> CH --> DD --> SCP --> EM --> OS
-    SCP --> EE --> PG
     DD --> PG
 
     classDef source fill:#64748b,color:#fff,stroke:none;
@@ -100,9 +98,31 @@ graph LR
     class S source;
     class GL,SP,EX,ON conn;
     class P,FT parse;
-    class CH,DD,SCP,EM,EE proc;
+    class CH,DD,SCP,EM proc;
     class OS,PG store;
 ```
+
+### GitLab connector specifics
+
+- **What gets pulled** — every `.md`, `.markdown`, `.rst` file at any depth in
+  the repo, plus root-level `README.txt` / `CODEOWNERS`. Vendor directories
+  (`node_modules/`, `vendor/`, `dist/`, `build/`, `.cache/`, etc.) are
+  filtered out before any fetch. There is **no per-project doc cap** —
+  large repos pull everything.
+- **Wiki pages** — fetched via GitLab's wiki API (`/projects/:id/wikis`)
+  unless the source's config sets `include_wiki: false`. Each wiki page
+  becomes a `RawDocument` with `source_path = "<project>@__wiki__:wiki/<slug>"`.
+- **Group ingest filtering** — when a source is a whole-group ingest
+  (`group_path` instead of `project_path`), the connector adds
+  `last_activity_after=<now - PRISM_GITLAB_GROUP_ACTIVE_WINDOW_DAYS>` (default
+  30 days) to `/groups/:id/projects` so dormant projects never appear in the
+  walk. The `gitlab_max_projects_per_source` cap (default 200) is a separate
+  blast-radius guard for thousand-project groups.
+- **Auth fallback** — per-source token > `PRISM_GITLAB_TOKEN` env var > no
+  token (public projects only). The UI no longer collects per-source
+  tokens; the wizard's project + group dropdowns hit
+  `/api/gitlab/projects/search` and `/api/gitlab/groups/search` against the
+  service-account token.
 
 ## Incremental Ingestion
 
@@ -213,28 +233,27 @@ The router agent picks teams *before* the filter is applied:
 
 ## Service Dependencies
 
-Under the declared model, services are declared. Dependencies between them
-come from two places:
-
-1. **Explicit declaration** — future: a `services` UI that lets you declare
-   `X depends on Y`. Not in Phase 1.
-2. **Derived from docs** — when a service-scoped source is ingested, the
-   pipeline scans the parsed text for "depends on X" patterns. If X is a
-   declared service (`find_any_by_name`), an edge gets written. If not, the
-   edge gets parked in `kg_pending_dependencies` and reconciled the moment
-   someone declares X.
+Service-to-service edges are **user-managed**. Each service detail page has a
+"Dependencies" section that lists outbound edges and lets the user pick
+another declared service from a team-grouped picker. No extraction from doc
+text — earlier versions tried both an LLM pass and a regex fallback; both
+were noisy and have been removed (see commit `bf4f680`).
 
 ```mermaid
-flowchart TD
-    DOC[Doc text mentions "depends on auth-service"] --> CHECK{auth-service declared?}
-    CHECK -->|yes| EDGE[insert kg_dependencies row]
-    CHECK -->|no| PEND[insert kg_pending_dependencies row]
-    LATER[User later declares auth-service] --> RECON[reconcile_pending_dependencies]
-    RECON --> EDGE
+flowchart LR
+    UI[Service detail page] -->|POST /services/:id/dependencies| API[catalog_routes]
+    API -->|service_repo.add_dependency| DB[(kg_dependencies)]
+    API -. invalidates .-> GRAPH[/api/organization/graph]
+    UI -->|DELETE /services/:id/dependencies/:to| API
+    API -->|service_repo.remove_dependency| DB
 ```
 
-Team-scoped and org-scoped sources do **not** contribute dependency edges in
-Phase 1 — we have no meaningful "from" service for them.
+- Edges have `source = 'manual'` so we can later distinguish hand-drawn from
+  any future automated source.
+- The org graph (`OrganizationGraph.tsx`) reads `dependencies` from
+  `/api/organization/graph` and renders dashed `depends on` edges.
+- The blast-radius graph on analyses uses the same dataset to walk
+  upstream/downstream from the assigned team's services.
 
 ## Hybrid Search Details
 
@@ -268,13 +287,16 @@ set to the task.
 | Search UI | raw retrieval order, paginated |
 | Chat | top supporting chunks for grounded answer generation |
 
-## Entity Extraction
+## Entity Extraction (removed)
 
-Under the declared model, team and service ownership is **not** extracted
-from documents — it's explicit. The regex entity extractor stays wired in for
-**service-to-service dependency** extraction only, so we can still surface
-"depends on X" relationships from doc text.
+Earlier versions ran an LLM + regex pass over each ingested doc to surface
+team / service / dependency mentions. Under the declared model that
+information is already explicit (orgs/teams/services are user-declared,
+deps are user-managed), and the extracted output was rarely accurate
+enough to be useful. The whole entity-extraction module
+(`entity_extractor.py`, `team_names.py`, `kg_pending_dependencies` table)
+has been removed.
 
-The conflict-detection surface has been removed: under the declared model a
+The conflict-detection surface was also removed: under the declared model a
 service belongs to exactly one team, so ownership conflicts can't happen at
-the data layer (plan open question 4).
+the data layer.

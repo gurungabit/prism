@@ -2,10 +2,15 @@
 
 ## Orchestrator Overview
 
-PRISM runs a LangGraph workflow with PostgreSQL checkpointing. The pipeline is mostly linear, with one bounded retrieval loop triggered by the coverage agent when critical evidence gaps remain.
+PRISM runs a LangGraph workflow with PostgreSQL checkpointing. The pipeline
+is mostly linear, with one bounded retrieval loop triggered by the coverage
+agent when critical evidence gaps remain. The planner is the entry point —
+it decides whether the run should be `full` (whole pipeline) or `chat`
+(short follow-up answered from prior thread context only).
 
 ```mermaid
 flowchart LR
+    P["Plan"]
     R["Retrieve"]
     RT["Route"]
     D["Dependencies"]
@@ -13,13 +18,38 @@ flowchart LR
     C["Coverage"]
     CI["Citations"]
     S["Synthesis"]
+    CH["Chat answer"]
 
+    P -- full --> R
+    P -- chat --> CH
     R --> RT --> D --> RE --> C --> CI --> S
     C -. retry when critical gaps remain .-> R
 
     classDef step fill:#f59e0b,color:#fff,stroke:none;
-    class R,RT,D,RE,C,CI,S step;
+    class P,R,RT,D,RE,C,CI,S,CH step;
 ```
+
+### Planner
+
+The planner runs first and:
+
+1. Picks the run mode (`full` vs `chat`) based on the requirement and any
+   prior turns in the thread.
+2. Picks the subset of agents to run for `full` mode (`router`,
+   `dependencies`, `risk_effort`, `coverage`).
+3. Detects rerun-style follow-ups ("can you run the analysis again?",
+   "rerun", "redo") and rewrites the requirement to the original turn-1
+   question via `effective_requirement`. The orchestrator then swaps both
+   `state["requirement"]` and `state["analysis_brief"]` so downstream
+   agents analyze the real problem, not the literal "rerun" prose.
+4. Computes the **thread transcript** once (`_format_thread_context`) and
+   stashes it on `state["thread_transcript"]`. Every downstream prompt
+   (router, dependencies, risk, coverage, synthesis) injects the transcript
+   above the requirement via `_thread_context_block`. First-turn runs see
+   an empty transcript and behave identically to the non-threaded case.
+5. Fires off a fire-and-forget LLM call to generate a 4-8 word turn title
+   (`_generate_and_persist_title`) that the UI uses on the turn card
+   header in place of the full paragraph requirement.
 
 ## Agent Roster
 
@@ -100,12 +130,15 @@ Notes:
 ### Dependencies
 
 Purpose:
-- map service-to-service relationships around the work
+- map service-to-service relationships around the work using the
+  user-managed `kg_dependencies` table
 
 Key behaviors:
 - prefers router-identified services in scope
 - falls back to chunk service hints only when routing did not identify services
 - traverses the dependency graph (recursive CTE in PostgreSQL) and classifies edges
+- edges in `kg_dependencies` are user-entered via the service detail page;
+  the agent does not extract new edges from doc text
 
 Output semantics:
 - `blocking`: relationships that are likely to stop or gate the work
@@ -174,17 +207,22 @@ classDiagram
         +str analysis_id
         +str analysis_brief
         +dict analysis_input
+        +str search_query
         +list retrieved_chunks
+        +dict plan
+        +list prior_turns
+        +str thread_transcript
         +AgentResult team_routing
         +AgentResult dependencies
         +AgentResult risk_assessment
         +AgentResult coverage_report
         +AgentResult citation_result
         +list stale_sources
-        +list conflicts  "always empty under declared model; retained for back-compat"
+        +list conflicts  "always empty; retained for back-compat"
         +int retrieval_rounds
         +list agent_trace
         +dict final_report
+        +dict chat_answer
     }
 
     class AgentResult {
