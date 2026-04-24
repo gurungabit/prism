@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import {
   Background,
   BackgroundVariant,
+  ControlButton,
   Controls,
   Handle,
   Position,
@@ -12,10 +13,11 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
-import { ArrowLeft, ArrowRight, Users, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Maximize2, Minimize2, Users, X } from "lucide-react";
 
 import "@xyflow/react/dist/style.css";
 import type { PRISMReport } from "../../lib/schemas";
+import { useFullscreen } from "../../hooks/useFullscreen";
 
 type TeamEdge = NonNullable<PRISMReport["team_blast_radius"]>["upstream"][number];
 
@@ -114,6 +116,7 @@ export function BlastRadiusGraph({
   urlByPath = {},
 }: BlastRadiusGraphProps) {
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const { ref: fullscreenRef, isFullscreen, toggle: toggleFullscreen } = useFullscreen();
 
   const { nodes, edges, edgeMap } = useMemo(() => {
     const nodeList: Node[] = [
@@ -198,7 +201,10 @@ export function BlastRadiusGraph({
   }
 
   return (
-    <div className="relative w-full h-[360px] rounded-lg border border-zinc-200 dark:border-zinc-700/40 bg-white dark:bg-[#171719] overflow-hidden">
+    <div
+      ref={fullscreenRef}
+      className={`relative w-full ${isFullscreen ? "h-screen rounded-none border-0" : "h-[360px] rounded-lg border border-zinc-200 dark:border-zinc-700/40"} bg-white dark:bg-[#171719] overflow-hidden`}
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -217,7 +223,15 @@ export function BlastRadiusGraph({
         <Controls
           showInteractive={false}
           className="!bg-white/80 dark:!bg-zinc-800/80 !border-zinc-200 dark:!border-zinc-700/40"
-        />
+        >
+          <ControlButton
+            onClick={toggleFullscreen}
+            title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+            aria-label={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+          >
+            {isFullscreen ? <Minimize2 /> : <Maximize2 />}
+          </ControlButton>
+        </Controls>
       </ReactFlow>
 
       {selected && (

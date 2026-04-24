@@ -2,6 +2,7 @@ import { useCallback, useMemo } from "react";
 import {
   Background,
   BackgroundVariant,
+  ControlButton,
   Controls,
   Handle,
   MiniMap,
@@ -13,10 +14,11 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
-import { Building2, Boxes, Users } from "lucide-react";
+import { Building2, Boxes, Maximize2, Minimize2, Users } from "lucide-react";
 
 import "@xyflow/react/dist/style.css";
 import type { OrganizationGraphResponse } from "../../lib/api";
+import { useFullscreen } from "../../hooks/useFullscreen";
 import type { SelectedNode } from "./NodeDetailPanel";
 
 // ── layout ────────────────────────────────────────────────────────────────
@@ -138,6 +140,8 @@ interface OrganizationGraphProps {
 }
 
 export function OrganizationGraph({ data, onSelect }: OrganizationGraphProps) {
+  const { ref: fullscreenRef, isFullscreen, toggle: toggleFullscreen } = useFullscreen();
+
   // Click handler dispatches on node id prefix. Node ids are stable
   // (``<kind>-<uuid>``) because we construct them below, so string split is
   // cheap and safer than threading detail routes into node data.
@@ -238,7 +242,10 @@ export function OrganizationGraph({ data, onSelect }: OrganizationGraphProps) {
   }, [data]);
 
   return (
-    <div className="w-full h-[calc(100vh-120px)] rounded-lg border border-zinc-200 dark:border-zinc-700/40 bg-white dark:bg-[#171719]">
+    <div
+      ref={fullscreenRef}
+      className={`w-full ${isFullscreen ? "h-screen rounded-none border-0" : "h-[calc(100vh-120px)] rounded-lg border border-zinc-200 dark:border-zinc-700/40"} bg-white dark:bg-[#171719]`}
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -260,7 +267,15 @@ export function OrganizationGraph({ data, onSelect }: OrganizationGraphProps) {
         <Controls
           showInteractive={false}
           className="!bg-white/80 dark:!bg-zinc-800/80 !border-zinc-200 dark:!border-zinc-700/40"
-        />
+        >
+          <ControlButton
+            onClick={toggleFullscreen}
+            title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+            aria-label={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+          >
+            {isFullscreen ? <Minimize2 /> : <Maximize2 />}
+          </ControlButton>
+        </Controls>
         <MiniMap
           pannable
           zoomable
