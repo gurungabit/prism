@@ -141,16 +141,25 @@ def _merge_paragraphs_into_chunks(
 
 
 def _split_long_paragraph(text: str, chunk_size: int, overlap: int) -> list[str]:
-    chunks = []
+    if chunk_size <= 0 or not text:
+        return [text] if text else []
+    chunks: list[str] = []
     start = 0
-    while start < len(text):
-        end = start + chunk_size
-        if end < len(text):
-            break_point = text.rfind(". ", start, end)
-            if break_point > start:
+    n = len(text)
+    min_step = max(1, chunk_size - overlap)
+    while start < n:
+        end = min(start + chunk_size, n)
+        if end < n:
+            break_point = text.rfind(". ", start + min_step, end)
+            if break_point != -1:
                 end = break_point + 1
-        chunks.append(text[start:end].strip())
-        start = end - overlap if overlap > 0 else end
+        piece = text[start:end].strip()
+        if piece:
+            chunks.append(piece)
+        if end >= n:
+            break
+        next_start = end - overlap if overlap > 0 else end
+        start = max(start + min_step, next_start)
     return chunks
 
 

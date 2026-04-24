@@ -282,6 +282,26 @@ class SourceRepository(CatalogRepo):
                     last_error,
                 )
 
+    async def reset_orphaned_syncing(self) -> int:
+        # Any row still marked ``syncing`` at process startup is orphaned:
+        # the background task that owned the state didn't survive the restart,
+        # so the status will never transition on its own. Flip these back to
+        # ``error`` with a note so the UI unlocks the Sync button.
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE sources
+                SET status = 'error',
+                    last_error = 'Ingest interrupted by restart'
+                WHERE status = 'syncing'
+                """,
+            )
+            # asyncpg returns "UPDATE N"
+            try:
+                return int(result.split()[-1])
+            except (ValueError, IndexError):
+                return 0
+
     async def count_docs(self, source_id: UUID) -> int:
         """Count declared source's indexed docs (for the sources list UI)."""
         async with self.pool.acquire() as conn:

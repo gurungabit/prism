@@ -292,6 +292,12 @@ class IngestionPipeline:
 
                 document_id = str(uuid.uuid4())
                 parsed_content = parse_document(raw_doc)
+                log.info(
+                    "parsed",
+                    source=source.name,
+                    index=idx,
+                    content_len=len(parsed_content),
+                )
 
                 if not parsed_content.strip():
                     stats["failed"] += 1
