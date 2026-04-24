@@ -1,4 +1,5 @@
 import { Streamdown } from "streamdown";
+import { code as codePlugin } from "@streamdown/code";
 import type { PRISMReport } from "../../lib/schemas";
 import type { AgentState } from "../../stores/analysis";
 import { Badge } from "../shared/Badge";
@@ -264,7 +265,7 @@ export function SynthesisPanel({
         </h2>
         <div className="border-l-2 border-[var(--color-accent)] dark:border-[var(--color-accent-dark)] pl-4">
           <div className="prose-chat text-[13px] text-zinc-700 dark:text-zinc-300 leading-[1.7]">
-            <Streamdown mode="static">
+            <Streamdown mode="static" plugins={{ code: codePlugin }}>
               {report.executive_summary || report.requirement}
             </Streamdown>
           </div>

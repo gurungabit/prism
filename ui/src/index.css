@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "streamdown/styles.css";
 @source "../node_modules/streamdown/dist/*.js";
+@source "../node_modules/@streamdown/code/dist/*.js";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -356,20 +357,8 @@ summary,
   border-color: var(--color-zinc-700);
 }
 
-.prose-chat pre {
-  background: var(--color-zinc-100);
-  border: 1px solid var(--color-zinc-200);
-  border-radius: 6px;
-  padding: 1em;
-  overflow-x: auto;
-  margin-bottom: 0.75em;
-}
-
-.dark .prose-chat pre {
-  background: var(--color-zinc-800);
-  border-color: var(--color-zinc-700);
-}
-
+/* Inline <code> styling kept; fenced <pre> blocks use Streamdown's own
+   default chrome (see ``streamdown/styles.css`` imported at the top). */
 .prose-chat pre code {
   background: none;
   padding: 0;
