@@ -168,12 +168,36 @@ class IngestionPipeline:
         finally:
             await connector.aclose()
 
-        await self.source_repo.mark_status(
-            source_id,
-            SourceStatus.READY,
-            last_error=None,
-            last_ingested_at=datetime.now(tz=timezone.utc),
-        )
+        # Per-document parse / index failures, or any OpenSearch bulk error,
+        # used to be silently masked because the source flipped to ``ready``
+        # regardless. Surface them: status -> error, last_error carries a
+        # short diagnostic the UI can show. The source still keeps whatever
+        # chunks did land (we don't roll back partial success), but the user
+        # knows to retry.
+        failed_count = int(stats.get("failed", 0) or 0)
+        index_errors = int(stats.get("index_errors", 0) or 0)
+        if failed_count or index_errors:
+            parts: list[str] = []
+            if failed_count:
+                parts.append(f"{failed_count} document(s) failed to parse/index")
+            if index_errors:
+                parts.append(f"{index_errors} OpenSearch bulk error(s)")
+            first_err = stats.get("index_first_error")
+            if first_err:
+                parts.append(f"first: {first_err}")
+            await self.source_repo.mark_status(
+                source_id,
+                SourceStatus.ERROR,
+                last_error="; ".join(parts)[:500],
+                last_ingested_at=datetime.now(tz=timezone.utc),
+            )
+        else:
+            await self.source_repo.mark_status(
+                source_id,
+                SourceStatus.READY,
+                last_error=None,
+                last_ingested_at=datetime.now(tz=timezone.utc),
+            )
         stats["source_id"] = str(source_id)
         return stats
 
@@ -252,7 +276,9 @@ class IngestionPipeline:
                         index=idx,
                         path=ref.source_path,
                     )
-                    existing = await self.registry.get_by_path(ref.source_path)
+                    existing = await self.registry.get_by_path(
+                        ref.source_path, source_id=source.id
+                    )
                     log.info(
                         "registry_lookup_ok",
                         source=source.name,
@@ -349,10 +375,21 @@ class IngestionPipeline:
         log.info("embedding_complete", total_chunks=len(all_chunks))
 
         log.info("phase_3_index", source=source.name, chunks=len(all_chunks))
-        indexed = await asyncio.to_thread(
+        indexed_count, index_errors = await asyncio.to_thread(
             index_chunks, all_chunks, self.os_client, source_id=source.id
         )
-        log.info("opensearch_indexed", count=indexed)
+        log.info(
+            "opensearch_indexed",
+            count=indexed_count,
+            error_count=len(index_errors),
+        )
+        # OpenSearch bulk failures used to be logged-and-forgotten while the
+        # source still got marked ``ready``. Surface them in stats so the
+        # caller can flip status to ``error`` or include them in
+        # ``last_error``.
+        if index_errors:
+            stats["index_errors"] = len(index_errors)
+            stats["index_first_error"] = str(index_errors[0])[:300]
 
         log.info("phase_4_graph", source=source.name, documents=len(prepared))
         for doc in prepared:
@@ -381,12 +418,46 @@ class IngestionPipeline:
                 log.error("graph_populate_failed", path=doc.raw_doc.ref.source_path, error=str(e))
                 stats["failed"] += 1
 
+        # Tombstone phase: any registry row whose path didn't show up on this
+        # ingest's upstream listing is stale -- the doc was removed/renamed
+        # upstream and we shouldn't keep its chunks searchable.
+        upstream_paths = {ref.source_path for ref in doc_refs}
+        existing_for_source = await self.registry.get_for_source(source.id)
+        stale_paths = [
+            row["source_path"]
+            for row in existing_for_source
+            if row["source_path"] not in upstream_paths
+        ]
+        if stale_paths:
+            log.info(
+                "tombstoning_removed_docs",
+                source=source.name,
+                count=len(stale_paths),
+            )
+            removed_doc_ids = await self.registry.delete_by_paths(
+                source.id, stale_paths
+            )
+            for doc_id in removed_doc_ids:
+                try:
+                    await asyncio.to_thread(
+                        delete_by_document_id, doc_id, self.os_client
+                    )
+                except Exception as e:  # noqa: BLE001
+                    log.warning(
+                        "tombstone_opensearch_delete_failed",
+                        document_id=doc_id,
+                        error=str(e)[:200],
+                    )
+            stats["tombstoned"] = len(removed_doc_ids)
+
         log.info(
             "source_complete",
             source=source.name,
             indexed=stats["indexed"],
             skipped=stats["skipped"],
             failed=stats["failed"],
+            tombstoned=stats.get("tombstoned", 0),
+            index_errors=stats.get("index_errors", 0),
         )
         return stats
 

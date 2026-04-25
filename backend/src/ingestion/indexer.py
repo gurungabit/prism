@@ -166,9 +166,21 @@ def _uuid_str(value: UUID | str | None) -> str | None:
     return str(value)
 
 
-def index_chunks(chunks: list[Chunk], client: OpenSearch | None = None, *, source_id: UUID | str | None = None) -> int:
+def index_chunks(
+    chunks: list[Chunk],
+    client: OpenSearch | None = None,
+    *,
+    source_id: UUID | str | None = None,
+) -> tuple[int, list[dict]]:
+    """Bulk-index chunks. Returns ``(success_count, error_items)``.
+
+    ``error_items`` is the raw list returned by ``helpers.bulk`` when an
+    item fails -- callers (the ingest pipeline) lift this into the source's
+    ``last_error`` so a partial failure can't silently leave the source
+    marked ``ready``.
+    """
     if not chunks:
-        return 0
+        return 0, []
 
     client = client or get_opensearch_client()
     index_name = settings.opensearch_index
@@ -208,7 +220,7 @@ def index_chunks(chunks: list[Chunk], client: OpenSearch | None = None, *, sourc
     else:
         log.info("chunks_indexed", count=success)
 
-    return success
+    return success, errors
 
 
 def delete_by_document_id(document_id: str, client: OpenSearch | None = None) -> int:
