@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -57,6 +57,17 @@ export function NewSourcePage() {
   const [step, setStep] = useState<Step>(prefill.scope && prefill.scopeId ? 2 : 1);
   const [scope, setScope] = useState<SourceScope>(prefill.scope ?? "service");
   const [scopeId, setScopeId] = useState<string>(prefill.scopeId ?? "");
+  // ``selectedOrgId`` tracks *which org's tree* the wizard is drilling
+  // into for the team/service picker. It's distinct from ``scope`` /
+  // ``scopeId`` (which is where the source ultimately attaches): a user
+  // can drill into org A, then attach the source to a team inside it.
+  // Previously the wizard hard-coded ``firstOrg`` for the team query, so
+  // selecting any non-first org as the *attachment point* still showed
+  // the first org's teams -- silently letting users attach team/service
+  // sources under the wrong org. Picking an org row now sets both
+  // ``selectedOrgId`` and the attach scope; picking a team/service in
+  // step 1 only changes the attach scope, not the drilled-into org.
+  const [selectedOrgId, setSelectedOrgId] = useState<string>("");
   const [addingTeam, setAddingTeam] = useState(false);
 
   const [kind, setKind] = useState<SourceKind>("gitlab");
@@ -80,12 +91,39 @@ export function NewSourcePage() {
   const create = useCreateSource();
   const triggerIngest = useTriggerIngest();
 
-  const firstOrg = orgs.data?.orgs[0];
-  const teamsQuery = useTeamsForOrg(firstOrg?.id);
+  const orgList = orgs.data?.orgs ?? [];
+  const firstOrg = orgList[0];
+
+  // Default to the first org once the list loads -- with one org this
+  // matches the legacy behavior; with multiple orgs the user picks
+  // which to drill into via the org row in step 1.
+  useEffect(() => {
+    if (!selectedOrgId && firstOrg) {
+      setSelectedOrgId(firstOrg.id);
+    }
+  }, [selectedOrgId, firstOrg]);
+
+  const teamsQuery = useTeamsForOrg(selectedOrgId || undefined);
 
   // Lookup for services: we need them per-team, but users pick across all
   // teams in the scope-picker, so flatten once teams load.
   const teamList = teamsQuery.data?.teams ?? [];
+
+  // Picking a different org row in step 1 has to clear any team/service
+  // attachment that was selected under the previous org -- otherwise we'd
+  // try to create a source pointing at a team/service that doesn't
+  // belong to the org the user just clicked. The org-row click sets
+  // ``selectedOrgId`` and ``scope='org'``/``scopeId=org.id`` directly,
+  // so a stale team/service selection is detectable here.
+  function selectOrgRow(orgId: string) {
+    if (selectedOrgId !== orgId) {
+      // User drilled into a different org -- reset any team/service
+      // attachment that referenced the previous org.
+      setSelectedOrgId(orgId);
+    }
+    setScope("org");
+    setScopeId(orgId);
+  }
   // Fetch services for every team in parallel. Because the number of teams is
   // usually small, this is fine in Phase 1; a dedicated /org/{id}/services
   // endpoint would be cleaner later.
@@ -227,10 +265,7 @@ export function NewSourcePage() {
               <button
                 key={org.id}
                 type="button"
-                onClick={() => {
-                  setScope("org");
-                  setScopeId(org.id);
-                }}
+                onClick={() => selectOrgRow(org.id)}
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg border text-left transition-colors ${
                   scope === "org" && scopeId === org.id
                     ? "border-[var(--color-accent)] bg-[var(--color-accent-muted)] dark:bg-[var(--color-accent-dark-muted)]"
@@ -265,9 +300,11 @@ export function NewSourcePage() {
               </button>
             </div>
             {addingTeam && (
+              // Inline team creation goes under the *drilled-into* org, not
+              // the first one in the list.
               <TeamForm
                 mode="create"
-                orgId={firstOrg.id}
+                orgId={selectedOrgId || firstOrg.id}
                 onSuccess={() => setAddingTeam(false)}
                 onCancel={() => setAddingTeam(false)}
               />

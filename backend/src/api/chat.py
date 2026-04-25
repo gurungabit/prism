@@ -8,7 +8,7 @@ from typing import AsyncGenerator
 from src.config import settings
 from src.llm_client import get_llm_client
 from src.observability.logging import get_logger
-from src.retrieval.hybrid_search import HybridSearchEngine
+from src.retrieval.hybrid_search import HybridSearchEngine, RetrievalUnavailable
 
 log = get_logger("chat")
 
@@ -36,12 +36,37 @@ async def chat_stream(
     scope_filter = scope if (scope and scope.get("org_id")) else None
 
     engine = HybridSearchEngine()
-    chunks = await engine.search(
-        requirement=message,
-        top_k=10,
-        expand=False,
-        scope_filter=scope_filter,
-    )
+    try:
+        chunks = await engine.search(
+            requirement=message,
+            top_k=10,
+            expand=False,
+            scope_filter=scope_filter,
+        )
+    except RetrievalUnavailable:
+        # Retrieval is down. We don't want to fall through into LLM
+        # synthesis -- the model would either invent an answer or
+        # refuse, both of which are worse than a clear "infra is
+        # down" signal. Emit a typed SSE error event so the UI can
+        # render a retryable banner instead of treating it as a
+        # normal turn. The conversation isn't appended to history
+        # (this turn never happened from the user's perspective).
+        log.error("chat_retrieval_unavailable", conversation_id=conversation_id)
+        yield {
+            "event": "error",
+            "data": json.dumps(
+                {
+                    "code": "retrieval_unavailable",
+                    "message": (
+                        "Search backend is currently unavailable. "
+                        "Try again in a moment."
+                    ),
+                    "conversation_id": conversation_id,
+                }
+            ),
+        }
+        yield {"event": "done", "data": json.dumps({"conversation_id": conversation_id})}
+        return
 
     context_parts = []
     citations = []
@@ -132,9 +157,30 @@ RULES:
         )
 
     except Exception as e:
-        log.error("chat_error", error=str(e))
-        error_msg = f"Error: {e}"
-        _conversations[conversation_id].append({"role": "assistant", "content": error_msg})
-        yield {"event": "token", "data": json.dumps({"content": error_msg})}
+        # LLM call failed mid-stream (provider down, proxy timeout, auth
+        # rejected, model overloaded, etc). The previous behavior shipped
+        # the raw exception as a normal token event -- clients couldn't
+        # distinguish errors from answers, and provider/proxy/model/auth
+        # details leaked to the user. Emit a typed SSE error event with
+        # a sanitized message; full diagnostics stay in server logs.
+        log.error(
+            "chat_llm_error",
+            conversation_id=conversation_id,
+            error=str(e)[:500],
+            error_type=type(e).__name__,
+        )
+        yield {
+            "event": "error",
+            "data": json.dumps(
+                {
+                    "code": "llm_unavailable",
+                    "message": (
+                        "Chat model is currently unavailable. "
+                        "Try again in a moment."
+                    ),
+                    "conversation_id": conversation_id,
+                }
+            ),
+        }
 
     yield {"event": "done", "data": json.dumps({"conversation_id": conversation_id})}

@@ -12,6 +12,7 @@ import { ChatInput } from "../components/chat/ChatInput";
 import { BlastRadiusGraph } from "../components/analysis/BlastRadiusGraph";
 import { useAnalysisStream } from "../hooks/useAnalysisStream";
 import { TimelineStep } from "../components/analysis/AgentCard";
+import type { AgentStepEvent } from "../lib/schemas";
 import { PipelineDiagram } from "../components/analysis/PipelineDiagram";
 import { SynthesisPanel } from "../components/analysis/SynthesisPanel";
 import { FindingCard } from "../components/analysis/FindingCard";
@@ -349,7 +350,10 @@ function EventLogSection({
   fmtRel,
   timelineEndRef,
 }: {
-  allSteps: { step: { id?: string; timestamp: number; action: string; detail?: string }; agentKey: string; agentName: string }[];
+  // Use the canonical SSE-event shape that ``TimelineStep`` consumes;
+  // narrowing it to a partial subset (and then casting back via ``any``)
+  // hid drift between the SSE schema and the timeline UI.
+  allSteps: { step: AgentStepEvent; agentKey: string; agentName: string }[];
   isLive: boolean;
   fmtRel: (ts: number) => string;
   timelineEndRef: React.RefObject<HTMLDivElement>;
@@ -389,7 +393,7 @@ function EventLogSection({
             {allSteps.map(({ step, agentKey, agentName }, i) => (
               <TimelineStep
                 key={step.id || i}
-                step={step as any}
+                step={step}
                 agentKey={agentKey}
                 agentName={agentName}
                 relativeTime={fmtRel(step.timestamp)}
@@ -1677,9 +1681,11 @@ function FullTurnCard({
   const isComplete = turn.status === "complete";
 
   // Prefer the exec summary; fall back to the rolling summary if synthesis
-  // didn't populate one (e.g. mid-run).
+  // didn't populate one (e.g. mid-run). ``ThreadTurnReport`` is loose
+  // (`[k: string]: unknown`), so we narrow ``executive_summary`` via a
+  // local helper rather than casting through ``any``.
   const previewText = useMemo(() => {
-    const exec = (turn.report as any)?.executive_summary;
+    const exec = turn.report?.executive_summary;
     if (typeof exec === "string" && exec.trim()) return exec;
     if (turn.rolling_summary) return turn.rolling_summary;
     return isRunning ? "Analysis running..." : "(no summary)";

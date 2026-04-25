@@ -28,6 +28,23 @@ from src.retrieval.query_expansion import expand_queries
 log = get_logger("hybrid_search")
 
 
+class RetrievalUnavailable(Exception):
+    """Retrieval backend is unreachable or failing every request.
+
+    Distinct from "no documents matched" -- this is *infrastructure*
+    failure: OpenSearch is down, the index is missing, embedding load
+    blew up, etc. Routes catch it and return a typed degraded response
+    (503 / structured SSE error event) so the user gets a retryable
+    banner instead of a plausible-looking empty page.
+
+    The previous behavior swallowed every exception and returned ``[]``,
+    which made Analyze proceed with no evidence (and produce a
+    confidently-wrong answer), Search show an empty page, and Chat
+    synthesize from nothing. Surfacing the failure preserves user
+    trust.
+    """
+
+
 class HybridSearchEngine:
     def __init__(self, client: OpenSearch | None = None) -> None:
         self.client = client or get_opensearch_client()
@@ -65,13 +82,44 @@ class HybridSearchEngine:
 
         all_results: list[list[Chunk]] = []
 
+        # Track per-call success so a transient failure on one expanded
+        # query doesn't take down retrieval if the rest worked. Only
+        # raise ``RetrievalUnavailable`` when *every* call failed --
+        # that's the "OpenSearch is down" signal we care about
+        # surfacing. A single call failing while others succeed gets
+        # logged at WARN and treated as zero contributions from that
+        # call.
+        attempts = 0
+        successes = 0
+
         for q in queries:
-            bm25_results = self._bm25_search(q, top_k, merged_filters, scope_filter)
+            attempts += 1
+            try:
+                bm25_results = self._bm25_search(q, top_k, merged_filters, scope_filter)
+            except Exception as e:  # noqa: BLE001
+                log.warning("bm25_search_failed", error=str(e)[:300], query=q[:80])
+                continue
+            successes += 1
             all_results.append(bm25_results)
 
-        query_embedding = embed_query(requirement)
-        vector_results = self._vector_search(query_embedding, top_k, merged_filters, scope_filter)
-        all_results.append(vector_results)
+        attempts += 1
+        try:
+            query_embedding = embed_query(requirement)
+            vector_results = self._vector_search(
+                query_embedding, top_k, merged_filters, scope_filter
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("vector_search_failed", error=str(e)[:300])
+        else:
+            successes += 1
+            all_results.append(vector_results)
+
+        if attempts > 0 and successes == 0:
+            log.error("retrieval_all_calls_failed", attempts=attempts)
+            raise RetrievalUnavailable(
+                "Search backend is currently unavailable. "
+                "All retrieval calls failed; check OpenSearch and embedding service."
+            )
 
         merged = self._rrf_merge(all_results, k=60)
 
@@ -111,12 +159,13 @@ class HybridSearchEngine:
         if filter_clauses:
             body["query"]["bool"]["filter"] = filter_clauses
 
-        try:
-            response = self.client.search(index=self.index_name, body=body)
-            return self._parse_hits(response)
-        except Exception as e:
-            log.error("bm25_search_failed", error=str(e))
-            return []
+        # Let exceptions propagate to ``search()`` -- it tracks per-call
+        # success and converts an all-failed run into ``RetrievalUnavailable``
+        # so the route layer can return a typed degraded response. The
+        # previous swallow-all behavior masked an OpenSearch outage as
+        # "no documents matched".
+        response = self.client.search(index=self.index_name, body=body)
+        return self._parse_hits(response)
 
     def _vector_search(
         self,
@@ -147,23 +196,21 @@ class HybridSearchEngine:
                 }
             }
 
-        try:
-            response = self.client.search(index=self.index_name, body=body)
-            chunks = self._parse_hits(response)
-            if min_score:
-                before = len(chunks)
-                chunks = [c for c in chunks if c.score >= min_score]
-                if before != len(chunks):
-                    log.info(
-                        "vector_results_filtered",
-                        before=before,
-                        after=len(chunks),
-                        min_score=min_score,
-                    )
-            return chunks
-        except Exception as e:
-            log.error("vector_search_failed", error=str(e))
-            return []
+        # See ``_bm25_search`` -- exceptions propagate to ``search()`` so
+        # the route layer can distinguish "no matches" from "OS is down".
+        response = self.client.search(index=self.index_name, body=body)
+        chunks = self._parse_hits(response)
+        if min_score:
+            before = len(chunks)
+            chunks = [c for c in chunks if c.score >= min_score]
+            if before != len(chunks):
+                log.info(
+                    "vector_results_filtered",
+                    before=before,
+                    after=len(chunks),
+                    min_score=min_score,
+                )
+        return chunks
 
     def _hybrid_search_native(
         self,

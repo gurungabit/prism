@@ -1,7 +1,12 @@
+import asyncio
+
 from uuid import UUID
+
+import pytest
 
 from src.retrieval.hybrid_search import (
     HybridSearchEngine,
+    RetrievalUnavailable,
     _build_scope_clauses,
     _validate_scope_against_lookups,
 )
@@ -234,3 +239,71 @@ def test_service_only_scope_does_not_admit_other_team_docs():
     assert {"terms": {"team_id": [str(parent_team)]}} in should
     # The IS NULL branch is still present so org-scoped chunks still match.
     assert {"bool": {"must_not": {"exists": {"field": "team_id"}}}} in should
+
+
+# ----- RetrievalUnavailable propagation -----
+
+
+class _FakeFailingClient:
+    """Minimal stand-in for the OpenSearch client that always errors.
+
+    ``HybridSearchEngine`` accepts an injected client, so we can
+    exercise the all-calls-failed path without a live OpenSearch. The
+    contract under test: when every query call raises, ``search()``
+    converts the failure to ``RetrievalUnavailable`` so callers
+    (routes / agents) can surface a typed degraded state instead of
+    swallowing the outage as "no results".
+    """
+
+    def search(self, **_):  # noqa: D401, ANN001
+        raise RuntimeError("OpenSearch is down")
+
+
+def test_search_raises_when_all_backend_calls_fail(monkeypatch):
+    """Regression: previously every query exception was swallowed and
+    ``search()`` returned ``[]``, so an OpenSearch outage looked like
+    "no documents matched". The fix raises ``RetrievalUnavailable`` so
+    the route layer can return 503 / SSE error events.
+    """
+    # Stub embedding so the test doesn't hit the real model loader.
+    from src.retrieval import hybrid_search as hs
+
+    monkeypatch.setattr(hs, "embed_query", lambda _q: [0.0] * 384)
+
+    async def _run() -> None:
+        engine = HybridSearchEngine(client=_FakeFailingClient())
+        with pytest.raises(RetrievalUnavailable):
+            await engine.search(requirement="anything", expand=False)
+
+    asyncio.run(_run())
+
+
+def test_search_partial_failure_returns_results(monkeypatch):
+    """A single query failing should NOT take down retrieval; only an
+    *all*-calls-failed run raises ``RetrievalUnavailable``. Here BM25
+    raises but vector search returns valid hits, so the engine should
+    still produce results.
+    """
+    from src.retrieval import hybrid_search as hs
+
+    monkeypatch.setattr(hs, "embed_query", lambda _q: [0.0] * 384)
+
+    class _PartialClient:
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, **_):  # noqa: ANN001
+            self.calls += 1
+            # First call (BM25) raises; later calls (vector) succeed
+            # with an empty-but-valid response.
+            if self.calls == 1:
+                raise RuntimeError("transient bm25 failure")
+            return {"hits": {"hits": []}}
+
+    async def _run() -> None:
+        engine = HybridSearchEngine(client=_PartialClient())
+        # Should NOT raise -- the vector path succeeded.
+        result = await engine.search(requirement="x", expand=False)
+        assert isinstance(result, list)
+
+    asyncio.run(_run())

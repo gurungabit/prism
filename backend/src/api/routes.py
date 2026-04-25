@@ -19,7 +19,7 @@ from src.ingestion.analysis_store import AnalysisRepository
 from src.ingestion.indexer import get_opensearch_client
 from src.models.report import AnalysisInput
 from src.observability.logging import get_logger
-from src.retrieval.hybrid_search import HybridSearchEngine
+from src.retrieval.hybrid_search import HybridSearchEngine, RetrievalUnavailable
 from src.retrieval.knowledge_queries import (
     get_all_teams,
     get_service_dependencies,
@@ -388,13 +388,25 @@ async def search_documents(request: SearchRequest):
     fetch_limit = max(offset + page_size + 1, 200)
 
     engine = HybridSearchEngine()
-    chunks = await engine.search(
-        requirement=request.query,
-        top_k=fetch_limit,
-        filters=request.filters if request.filters else None,
-        expand=False,
-        scope_filter=request.scope,
-    )
+    try:
+        chunks = await engine.search(
+            requirement=request.query,
+            top_k=fetch_limit,
+            filters=request.filters if request.filters else None,
+            expand=False,
+            scope_filter=request.scope,
+        )
+    except RetrievalUnavailable as e:
+        # Distinct from "no documents matched" -- 503 + typed detail so
+        # the UI can render a "search backend is down, retry" banner
+        # instead of an empty results page.
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "retrieval_unavailable",
+                "message": str(e),
+            },
+        ) from e
 
     total = len(chunks) if len(chunks) < fetch_limit else None
     if total is not None:
