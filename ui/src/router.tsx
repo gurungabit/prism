@@ -44,16 +44,20 @@ const searchRouteSearchSchema = z.object({
   q: z.string().catch("").default(""),
   page: z.coerce.number().int().min(1).catch(1).default(1),
   entityTypes: z.array(z.string()).catch([]).default([]),
-  teams: z.array(z.string()).catch([]).default([]),
-  services: z.array(z.string()).catch([]).default([]),
+  // Catalog scope (UUIDs from the declared org/team/service tree). Replaces
+  // the old free-text ``team_hint`` / ``service_hint`` URL params.
+  orgId: z.string().catch("").default(""),
+  teamIds: z.array(z.string()).catch([]).default([]),
+  serviceIds: z.array(z.string()).catch([]).default([]),
 });
 
 const searchRouteDefaultValues = {
   q: "",
   page: 1,
   entityTypes: [] as string[],
-  teams: [] as string[],
-  services: [] as string[],
+  orgId: "",
+  teamIds: [] as string[],
+  serviceIds: [] as string[],
 };
 
 const newSourceSearchSchema = z.object({

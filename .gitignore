@@ -49,3 +49,6 @@ htmlcov/
 # Misc
 *.bak
 *.tmp
+
+# Codex / review artifacts (local only)
+review.md

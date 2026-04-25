@@ -37,6 +37,13 @@ export interface AnalysisInput {
   known_teams?: string;
   known_services?: string;
   questions_to_answer?: string;
+  // Catalog-backed retrieval scope. ``org_id`` pins retrieval to a single
+  // org's chunks; ``team_ids`` / ``service_ids`` narrow further. Empty
+  // arrays (or undefined ``org_id``) fall back to the legacy un-scoped
+  // path on the backend.
+  org_id?: string;
+  team_ids?: string[];
+  service_ids?: string[];
   // Threading: present on follow-ups to link the new run into an existing
   // thread. ``force_full`` makes a follow-up run a full analysis even when
   // the planner would otherwise pick chat mode.

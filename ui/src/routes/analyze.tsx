@@ -3,6 +3,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useStartAnalysis, useHistory } from "../hooks/useAnalysis";
 import { Input, Textarea } from "../components/shared/Input";
 import { Button } from "../components/shared/Button";
+import { ScopeSelector, type ScopeValue } from "../components/catalog/ScopeSelector";
 import type { AnalysisInput } from "../lib/api";
 import {
   FlaskConical,
@@ -45,6 +46,11 @@ export function AnalyzePage() {
     known_services: "",
     questions_to_answer: "",
   });
+  const [scope, setScope] = useState<ScopeValue>({
+    org_id: undefined,
+    team_ids: [],
+    service_ids: [],
+  });
   const [showContext, setShowContext] = useState(false);
   const navigate = useNavigate();
   const startAnalysis = useStartAnalysis();
@@ -67,6 +73,11 @@ export function AnalyzePage() {
       known_teams: analysisInput.known_teams?.trim() || "",
       known_services: analysisInput.known_services?.trim() || "",
       questions_to_answer: analysisInput.questions_to_answer?.trim() || "",
+      // Catalog scope -- pushed down into OpenSearch by retrieval_agent so
+      // the run only grounds on chunks inside the selected org/team/service.
+      org_id: scope.org_id,
+      team_ids: scope.team_ids,
+      service_ids: scope.service_ids,
     });
     navigate({ to: "/analyze/$runId", params: { runId: result.analysis_id } });
   }
@@ -143,6 +154,18 @@ export function AnalyzePage() {
             />
           </div>
 
+          <div className="rounded-xl border border-zinc-200/80 dark:border-zinc-700/40 bg-white/40 dark:bg-zinc-900/30 p-4">
+            <div className="flex items-baseline justify-between mb-3">
+              <span className="text-[11px] font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+                Retrieval scope
+              </span>
+              <span className="text-[10px] text-zinc-400 dark:text-zinc-500">
+                pins which docs the agents read
+              </span>
+            </div>
+            <ScopeSelector value={scope} onChange={setScope} />
+          </div>
+
           <div>
             {!showContext ? (
               <button
@@ -171,14 +194,14 @@ export function AnalyzePage() {
                     className="min-h-[96px]"
                   />
                   <Input
-                    label="Known Teams"
-                    placeholder="platform-team, payments-team, security-team"
+                    label="Known Teams (free-text, prompt context only)"
+                    placeholder="External team names not yet declared..."
                     value={analysisInput.known_teams}
                     onChange={(e) => updateField("known_teams", e.target.value)}
                   />
                   <Input
-                    label="Known Services"
-                    placeholder="auth-service, api-gateway, invoice-service"
+                    label="Known Services (free-text, prompt context only)"
+                    placeholder="External service names not yet declared..."
                     value={analysisInput.known_services}
                     onChange={(e) => updateField("known_services", e.target.value)}
                   />
