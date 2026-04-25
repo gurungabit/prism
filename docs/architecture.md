@@ -176,10 +176,17 @@ Every source row satisfies `(org_id IS NOT NULL) + (team_id IS NOT NULL) +
 
 - `kg_documents` holds denormalized `(source_id, org_id, team_id, service_id)`
   plus title/path/platform. Dropping a source cascades these away.
-- `kg_dependencies` is keyed by service UUIDs (`from_service_id`,
-  `to_service_id`). Rows are user-managed via the service detail page; the
-  ingestion pipeline does not write to it. Edges carry `source = 'manual'`
-  so any future automated origin can be distinguished.
+- `kg_dependencies` carries two edge flavours in one table. **Catalog edges**
+  link `from_service_id` to `to_service_id` (both UUIDs in `services`).
+  **External edges** set `to_service_id` NULL and use `to_external_name` +
+  `to_external_description` to capture targets outside the declared catalog
+  (Stripe, Auth0, an upstream team's API). A CHECK constraint enforces XOR;
+  external uniqueness is case-insensitive via a function-based unique index
+  on `(from_service_id, lower(to_external_name))`. Rows are user-managed via
+  the service detail page — the ingestion pipeline does not write to this
+  table. Edges carry `source = 'manual'` so any future automated origin can
+  be distinguished. The org graph filters external rows out because the
+  visualization only renders declared catalog nodes.
 - `document_registry` keeps content-hash idempotency and gains `source_id`.
 
 ## Ingestion Flow

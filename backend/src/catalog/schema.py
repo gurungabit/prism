@@ -128,10 +128,18 @@ CREATE TABLE IF NOT EXISTS kg_dependencies (
         OR
         (to_service_id IS NULL AND to_external_name IS NOT NULL)
     ),
-    UNIQUE (from_service_id, to_service_id),
-    UNIQUE (from_service_id, to_external_name)
+    UNIQUE (from_service_id, to_service_id)
 );
 CREATE INDEX IF NOT EXISTS kg_dependencies_to_idx ON kg_dependencies(to_service_id);
+-- Case-insensitive uniqueness for external targets: the UI dedupes
+-- by ``lower(name)`` so ``Stripe`` and ``stripe`` should collide at the
+-- DB layer too. A function-based partial unique index lets us preserve
+-- the user's display casing while preventing dupes that differ only in
+-- case. ``ON CONFLICT (from_service_id, lower(to_external_name)) DO
+-- UPDATE`` in the repo references this index by its expression columns.
+CREATE UNIQUE INDEX IF NOT EXISTS kg_dependencies_external_name_lower_uniq
+    ON kg_dependencies (from_service_id, lower(to_external_name))
+    WHERE to_external_name IS NOT NULL;
 """
 
 

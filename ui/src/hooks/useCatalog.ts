@@ -165,6 +165,20 @@ export function useServiceById(serviceId: string | undefined) {
   });
 }
 
+// Service mutations need to invalidate every cache that lists services:
+//   - ``services-for-team``: per-team listing on the team detail page.
+//   - ``services-for-org``:  the org-wide list ScopeSelector hydrates so
+//     Analyze/Search/Chat scope dropdowns see new services without a reload.
+//   - ``organization-graph``: feeds DependenciesSection's catalog picker
+//     and the org graph view; a fresh service has to show up in both.
+//   - ``teams``: the legacy graph endpoint still embeds service names.
+function _invalidateAllServiceCaches(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ["services-for-team"] });
+  qc.invalidateQueries({ queryKey: ["services-for-org"] });
+  qc.invalidateQueries({ queryKey: ["organization-graph"] });
+  qc.invalidateQueries({ queryKey: ["teams"] });
+}
+
 export function useCreateService() {
   const qc = useQueryClient();
   return useMutation({
@@ -177,7 +191,7 @@ export function useCreateService() {
     }) => createService(teamId, body),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["services-for-team", vars.teamId] });
-      qc.invalidateQueries({ queryKey: ["teams"] });
+      _invalidateAllServiceCaches(qc);
     },
   });
 }
@@ -194,7 +208,7 @@ export function useUpdateService() {
     }) => updateService(serviceId, body),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["service-by-id", vars.serviceId] });
-      qc.invalidateQueries({ queryKey: ["services-for-team"] });
+      _invalidateAllServiceCaches(qc);
     },
   });
 }
@@ -204,7 +218,7 @@ export function useDeleteService() {
   return useMutation({
     mutationFn: (serviceId: string) => deleteService(serviceId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["services-for-team"] });
+      _invalidateAllServiceCaches(qc);
     },
   });
 }

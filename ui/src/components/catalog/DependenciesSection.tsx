@@ -358,10 +358,17 @@ function DependencyRow({
       </div>
       <button
         onClick={onRemove}
-        className="opacity-0 group-hover:opacity-100 text-zinc-400 hover:text-rose-500 transition-opacity p-1"
-        aria-label="Remove dependency"
+        // Hover-only visibility hid the action from keyboard-only users.
+        // ``focus:opacity-100`` brings the button back as soon as it
+        // takes focus (programmatic, screen-reader, or keyboard tab).
+        // ``group-focus-within`` covers the case where focus is on
+        // another descendant of the row. The aria-label names the
+        // dependency so a screen-reader user can disambiguate among
+        // rows in the list.
+        className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100 text-zinc-400 hover:text-rose-500 focus-visible:text-rose-500 transition-opacity p-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/50"
+        aria-label={`Remove dependency on ${dep.to_service_name}`}
       >
-        <Trash2 className="w-3.5 h-3.5" />
+        <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
       </button>
     </div>
   );
