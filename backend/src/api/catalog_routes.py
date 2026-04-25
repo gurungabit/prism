@@ -334,11 +334,14 @@ class ServiceDependencyCreateBody(BaseModel):
     the first wires the edge to a declared catalog service; the second
     records a free-text target outside the catalog (Stripe, Auth0, an
     upstream team's API, etc.) along with an optional description.
+
+    Length caps prevent multi-MB payloads from sneaking into the DB and
+    keep the UI's display layout sane. They're generous on purpose.
     """
 
     to_service_id: UUID | None = None
-    to_external_name: str | None = None
-    to_external_description: str = ""
+    to_external_name: str | None = Field(default=None, max_length=200)
+    to_external_description: str = Field(default="", max_length=2000)
 
 
 @router.get("/services/{service_id}/dependencies")
@@ -400,6 +403,33 @@ async def add_service_dependency(
         await repo.close()
 
 
+# NOTE: The external-delete route MUST be registered before the
+# UUID-typed catalog-delete route. FastAPI matches in declaration order,
+# and ``/dependencies/external`` would otherwise match the path-parameter
+# variant first -- with ``to_service_id="external"`` -- and fail UUID
+# parsing with a 422 before the more-specific route is even checked.
+@router.delete("/services/{service_id}/dependencies/external")
+async def delete_external_service_dependency(
+    service_id: UUID,
+    name: str,
+) -> dict[str, str]:
+    """Remove an external (free-text) dependency edge.
+
+    The target name is passed as a query parameter -- not a path segment --
+    so names containing ``/``, ``?``, ``#`` or pre-encoded ``%2F`` don't
+    break route matching. Matching is case-insensitive to mirror the
+    storage uniqueness.
+    """
+    repo = await ServiceRepository.create()
+    try:
+        removed = await repo.remove_external_dependency(service_id, name)
+        if not removed:
+            raise HTTPException(status_code=404, detail="Dependency not found")
+        return {"status": "removed"}
+    finally:
+        await repo.close()
+
+
 @router.delete("/services/{service_id}/dependencies/{to_service_id}")
 async def delete_service_dependency(
     service_id: UUID,
@@ -409,22 +439,6 @@ async def delete_service_dependency(
     repo = await ServiceRepository.create()
     try:
         removed = await repo.remove_dependency(service_id, to_service_id)
-        if not removed:
-            raise HTTPException(status_code=404, detail="Dependency not found")
-        return {"status": "removed"}
-    finally:
-        await repo.close()
-
-
-@router.delete("/services/{service_id}/dependencies/external/{external_name}")
-async def delete_external_service_dependency(
-    service_id: UUID,
-    external_name: str,
-) -> dict[str, str]:
-    """Remove an external (free-text) dependency edge."""
-    repo = await ServiceRepository.create()
-    try:
-        removed = await repo.remove_external_dependency(service_id, external_name)
         if not removed:
             raise HTTPException(status_code=404, detail="Dependency not found")
         return {"status": "removed"}

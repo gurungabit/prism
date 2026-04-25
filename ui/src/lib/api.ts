@@ -396,8 +396,13 @@ export function deleteExternalServiceDependency(
   serviceId: string,
   externalName: string,
 ) {
+  // External name goes via query string -- not a path segment -- so names
+  // containing ``/``, ``?``, ``#`` (or any pre-encoded variants) can't
+  // break route matching. Case is preserved over the wire; the backend
+  // matches case-insensitively to mirror storage uniqueness.
+  const params = new URLSearchParams({ name: externalName });
   return request<{ status: string }>(
-    `/api/services/${serviceId}/dependencies/external/${encodeURIComponent(externalName)}`,
+    `/api/services/${serviceId}/dependencies/external?${params.toString()}`,
     { method: "DELETE" },
   );
 }

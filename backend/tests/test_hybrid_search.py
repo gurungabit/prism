@@ -72,6 +72,39 @@ def test_scope_filter_empty_returns_no_clauses():
     assert _build_scope_clauses({"team_ids": [], "service_ids": None}) == []
 
 
+def test_unresolved_service_id_emits_match_nothing_clause():
+    """Regression: a stale ``service_id`` (deleted service, bookmark from
+    another org) used to leak into the OpenSearch clause as
+    ``service_id IS NULL OR service_id IN [unknown-uuid]``. The IS NULL
+    branch then admitted every team-scoped chunk in the broader scope.
+
+    The fix sets a ``__match_nothing__`` sentinel on the post-derivation
+    filter when none of the requested service IDs resolve, and the clause
+    builder turns that into a ``must_not match_all`` so retrieval returns
+    zero hits instead of broadening.
+
+    This test exercises the clause shape only; the parent-team derivation
+    is async and lives behind ``_expand_scope_with_service_parents``.
+    """
+    org_id = UUID("11111111-1111-1111-1111-111111111111")
+
+    clauses = _build_scope_clauses({"org_id": org_id, "__match_nothing__": True})
+    assert clauses == [{"bool": {"must_not": {"match_all": {}}}}]
+
+    # Sentinel wins over org_id / team / service clauses -- anything else
+    # would be a leak, since the scope-resolver has explicitly said
+    # "nothing the caller asked for exists".
+    sentinel_only = _build_scope_clauses(
+        {
+            "org_id": org_id,
+            "team_ids": [UUID("22222222-2222-2222-2222-222222222222")],
+            "service_ids": [UUID("33333333-3333-3333-3333-333333333333")],
+            "__match_nothing__": True,
+        }
+    )
+    assert sentinel_only == [{"bool": {"must_not": {"match_all": {}}}}]
+
+
 def test_service_only_scope_does_not_admit_other_team_docs():
     """Regression: picking ``service_ids=[X]`` without ``team_ids`` used to
     admit team-scoped chunks for *other* teams in the same org via the

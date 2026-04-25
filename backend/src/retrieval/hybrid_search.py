@@ -292,16 +292,23 @@ class HybridSearchEngine:
 async def _expand_scope_with_service_parents(
     scope_filter: dict | None,
 ) -> dict | None:
-    """Add parent team_ids for any selected service_ids.
+    """Resolve ``service_ids`` against the catalog and pin the team scope.
 
-    Without this expansion the OpenSearch clause builder would emit a
-    ``team_id IS NULL OR team_id IN (...)`` branch off the explicit
-    ``team_ids`` list only -- selecting just a service would still admit
-    team-scoped chunks for *other* teams in the same org because the
-    nullable branch accepts any team-scoped chunk. Pre-deriving the
-    parent teams pins the team clause to the union of (explicit teams) +
-    (services' parent teams), which is the right semantic for "I want
-    chunks reachable from these services".
+    Two jobs:
+
+    1. Add parent team_ids for the resolvable services. Without this the
+       team clause's ``IS NULL OR team_id IN (...)`` branch admits team-
+       scoped chunks for *other* teams in the same org -- the IS NULL
+       branch is too permissive when the caller's intent was "chunks
+       reachable from these services".
+    2. Drop *unresolved* service IDs from the returned filter and -- if
+       the caller asked for service scope but none of the IDs resolve --
+       set a sentinel so the clause builder emits match-nothing. Without
+       step 2 a stale UUID (deleted service, bookmark from another org)
+       would leave the unresolved ID in ``service_ids``, the clause
+       becomes ``service_id IS NULL OR service_id IN [unknown-uuid]``,
+       and the IS NULL branch admits every team-scoped chunk in the
+       broader scope.
 
     Returns the scope dict (possibly mutated copy) or ``None`` when no
     scope was supplied.
@@ -319,22 +326,45 @@ async def _expand_scope_with_service_parents(
     repo = await ServiceRepository.create()
     try:
         parent_team_ids: set[str] = set()
+        resolved_service_ids: set[str] = set()
         for sid in service_ids:
             try:
                 service = await repo.get(_UUID(sid))
             except (ValueError, TypeError):
                 continue
-            if service is not None and service.team_id is not None:
+            if service is None:
+                continue
+            resolved_service_ids.add(str(service.id))
+            if service.team_id is not None:
                 parent_team_ids.add(str(service.team_id))
     finally:
         await repo.close()
 
-    if not parent_team_ids:
-        return scope_filter
-
     expanded = dict(scope_filter)
-    existing_teams = set(_collect_ids(scope_filter.get("team_ids")))
-    expanded["team_ids"] = sorted(existing_teams | parent_team_ids)
+
+    if not resolved_service_ids:
+        # Caller picked a specific set of services, none of which exist
+        # (stale bookmark, cross-org reference, deleted services). The
+        # safe answer is "no results" -- silently falling back to org or
+        # team scope would surface chunks the user didn't ask for.
+        log.warning(
+            "scope_service_ids_all_unresolved",
+            requested=len(service_ids),
+        )
+        expanded["__match_nothing__"] = True
+        return expanded
+
+    if len(resolved_service_ids) != len(service_ids):
+        log.warning(
+            "scope_service_ids_partially_resolved",
+            requested=len(service_ids),
+            resolved=len(resolved_service_ids),
+        )
+
+    expanded["service_ids"] = sorted(resolved_service_ids)
+    if parent_team_ids:
+        existing_teams = set(_collect_ids(scope_filter.get("team_ids")))
+        expanded["team_ids"] = sorted(existing_teams | parent_team_ids)
     return expanded
 
 
@@ -347,7 +377,15 @@ def _build_scope_clauses(scope_filter: dict) -> list[dict]:
       a chunk matches if its team/service is NULL **or** in the allow-list.
       ``NULL`` means the chunk is org-scoped (or team-scoped, respectively),
       so it's in scope by inheritance.
+    - ``__match_nothing__`` short-circuits to a clause no chunk satisfies;
+      see ``_expand_scope_with_service_parents`` for when this is set.
     """
+    if scope_filter.get("__match_nothing__"):
+        # ``must_not: match_all`` is the canonical "match no documents"
+        # clause in OpenSearch -- safer than relying on a sentinel UUID
+        # that *might* coincide with a real chunk.
+        return [{"bool": {"must_not": {"match_all": {}}}}]
+
     clauses: list[dict] = []
 
     org_id = scope_filter.get("org_id")

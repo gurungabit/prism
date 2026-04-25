@@ -65,11 +65,15 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: prism-api
+    # ``config.Settings`` reads from ``PRISM_*`` env vars (see backend/src/config.py).
+    # Compose used to set the unprefixed names which were silently ignored,
+    # leaving the container on ``localhost`` defaults that can't see other
+    # services on the docker network. Kept aligned with docs/deployment.md.
     environment:
-      - OPENSEARCH_URL=http://opensearch:9200
-      - POSTGRES_URL=postgresql://prism:prismpass@postgres:5432/prism
-      - REDIS_URL=redis://redis:6379
-      - DATA_DIR=/data
+      - PRISM_OPENSEARCH_URL=http://opensearch:9200
+      - PRISM_POSTGRES_URL=postgresql://prism:prismpass@postgres:5432/prism
+      - PRISM_REDIS_URL=redis://redis:6379
+      - PRISM_DATA_DIR=/data
     ports:
       - "8000:8000"
     depends_on:

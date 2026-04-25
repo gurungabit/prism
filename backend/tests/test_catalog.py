@@ -224,6 +224,73 @@ def test_manual_dependency_add_remove(fresh_dsn: str):
     asyncio.run(_run())
 
 
+def test_external_dependency_crud_and_case_insensitive_dedup(fresh_dsn: str):
+    """External deps round-trip through the repo, mix with catalog deps in
+    listings, and dedupe case-insensitively.
+
+    Case-insensitive uniqueness is enforced by the function-based unique
+    index ``kg_dependencies_external_name_lower_uniq``. The UI dedupes
+    by ``lower(name)`` too -- without DB enforcement two clients could
+    race-create ``Stripe`` and ``stripe`` as separate edges.
+    """
+    async def _run() -> None:
+        orgs = await OrgRepository.create(dsn=fresh_dsn)
+        teams = await TeamRepository.create(dsn=fresh_dsn)
+        services = await ServiceRepository.create(dsn=fresh_dsn)
+        try:
+            org = await orgs.insert("Acme")
+            team = await teams.insert(org.id, "Platform")
+            from_svc = await services.insert(team.id, "auth-service")
+            other_svc = await services.insert(team.id, "invoice-service")
+
+            # Mix: one catalog dep, two externals (same name diff case).
+            await services.add_dependency(from_svc.id, other_svc.id, source_doc="manual")
+            await services.add_external_dependency(
+                from_svc.id, "Stripe API", "Payment intents", source_doc="manual"
+            )
+            # Case-insensitive collision -- updates the description in place,
+            # does not create a second row.
+            await services.add_external_dependency(
+                from_svc.id, "stripe api", "Payment intents v2", source_doc="manual"
+            )
+
+            outbound = await services.list_outbound_dependencies(from_svc.id)
+            assert len(outbound) == 2
+
+            externals = [d for d in outbound if d["kind"] == "external"]
+            internals = [d for d in outbound if d["kind"] == "service"]
+            assert len(externals) == 1
+            assert len(internals) == 1
+            # Description was updated by the second insert.
+            assert externals[0]["description"] == "Payment intents v2"
+            # Internal edge has no description but does carry the team name.
+            assert internals[0]["to_service_name"] == "invoice-service"
+            assert internals[0]["team_name"] == "Platform"
+
+            # Removing by mismatched case still hits the row.
+            removed = await services.remove_external_dependency(from_svc.id, "STRIPE API")
+            assert removed is True
+            after = await services.list_outbound_dependencies(from_svc.id)
+            assert all(d["kind"] != "external" for d in after)
+
+            # Idempotent removal returns False rather than raising.
+            removed_again = await services.remove_external_dependency(from_svc.id, "stripe api")
+            assert removed_again is False
+
+            # External edges are excluded from the org-wide dependency listing
+            # because the org graph only renders declared catalog nodes.
+            await services.add_external_dependency(from_svc.id, "Auth0", "OIDC")
+            graph_edges = await services.list_all_dependencies()
+            assert all(e.get("to_service_id") for e in graph_edges)
+            assert all("Auth0" not in (e.get("to_service") or "") for e in graph_edges)
+        finally:
+            await services.close()
+            await teams.close()
+            await orgs.close()
+
+    asyncio.run(_run())
+
+
 def test_registry_composite_uniqueness_and_delete_by_paths(fresh_dsn: str):
     """Two sources can each have their own ``README.md`` (composite UNIQUE),
     and ``delete_by_paths`` only tombstones rows for the source it was

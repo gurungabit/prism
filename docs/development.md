@@ -65,15 +65,24 @@ uv run --with pytest pytest -q tests
 
 Current backend suite covers:
 
-- API routes
+- API routes (analyze, search, chat)
+- catalog repos + manual deps (catalog + external) + registry composite uniqueness
 - chunking
 - connectors
 - deduplication
-- entity extraction
-- hybrid search
+- hybrid search + scope-filter clause shapes (incl. unresolved-service match-nothing)
+- ingestion pipeline (registry, tombstone)
 - orchestrator behavior
 - parsing
 - report models
+
+Catalog tests need Postgres and auto-skip without one. To exercise them
+locally, point at the dev compose DB:
+
+```bash
+PRISM_TEST_POSTGRES_URL='postgresql://prism:prismpass@localhost:5432/prism' \
+  uv run pytest tests
+```
 
 ### Frontend Build Check
 

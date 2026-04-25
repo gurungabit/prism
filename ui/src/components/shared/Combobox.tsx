@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -64,6 +65,14 @@ export function Combobox({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Stable IDs for the ARIA wiring. The listbox id is announced by
+  // ``aria-controls`` on the input, and ``aria-activedescendant`` points
+  // at the currently-highlighted option's id so screen readers can read
+  // the option label without focus actually leaving the input.
+  const reactId = useId();
+  const listboxId = `combobox-listbox-${reactId}`;
+  const optionId = (id: string) => `combobox-option-${reactId}-${id}`;
 
   const selected = useMemo(
     () => options.find((o) => o.id === value) ?? null,
@@ -172,11 +181,24 @@ export function Combobox({
             : "border-zinc-200 dark:border-zinc-600/50 bg-white dark:bg-[#1e1e20] focus-within:border-[var(--color-accent)] dark:focus-within:border-[var(--color-accent-dark)]"
         }`}
       >
-        <Search className="w-3.5 h-3.5 text-zinc-400 flex-shrink-0" />
+        <Search className="w-3.5 h-3.5 text-zinc-400 flex-shrink-0" aria-hidden="true" />
         <input
           ref={inputRef}
           type="text"
           disabled={disabled}
+          // ARIA combobox pattern: input is the combobox, dropdown is the
+          // listbox referenced by ``aria-controls``, and the highlighted
+          // option (focus stays on the input) is named via
+          // ``aria-activedescendant`` so screen readers announce it.
+          role="combobox"
+          aria-expanded={open}
+          aria-controls={listboxId}
+          aria-autocomplete="list"
+          aria-activedescendant={
+            open && selectableOptions[highlight]
+              ? optionId(selectableOptions[highlight].id)
+              : undefined
+          }
           className="flex-1 bg-transparent outline-none text-[13px] text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-600 disabled:cursor-not-allowed"
           placeholder={placeholder}
           value={displayValue}
@@ -203,6 +225,7 @@ export function Combobox({
           </button>
         )}
         <ChevronDown
+          aria-hidden="true"
           className={`w-3.5 h-3.5 text-zinc-400 flex-shrink-0 transition-transform ${
             open ? "rotate-180" : ""
           }`}
@@ -211,6 +234,8 @@ export function Combobox({
 
       {open && !disabled && (
         <div
+          id={listboxId}
+          role="listbox"
           className="
             absolute z-20 mt-1 w-full max-h-64 overflow-y-auto
             rounded-lg border border-zinc-200 dark:border-zinc-700/60
@@ -228,6 +253,7 @@ export function Combobox({
                 return (
                   <div
                     key={`group-${row.label}-${i}`}
+                    role="presentation"
                     className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500"
                   >
                     {row.label}
@@ -239,8 +265,15 @@ export function Combobox({
               return (
                 <button
                   key={row.option.id}
+                  id={optionId(row.option.id)}
                   type="button"
+                  // Native ``disabled`` keeps mouse focus management while
+                  // the explicit ``aria-disabled`` is what assistive tech
+                  // announces.
                   disabled={row.option.disabled}
+                  role="option"
+                  aria-selected={isSelected}
+                  aria-disabled={row.option.disabled || undefined}
                   onMouseEnter={() => setHighlight(row.selectableIndex)}
                   onClick={() => commit(row.option)}
                   className={`
@@ -256,6 +289,7 @@ export function Combobox({
                   `}
                 >
                   <Check
+                    aria-hidden="true"
                     className={`w-3.5 h-3.5 mt-0.5 flex-shrink-0 ${
                       isSelected
                         ? "text-[var(--color-accent)] dark:text-[var(--color-accent-dark)]"

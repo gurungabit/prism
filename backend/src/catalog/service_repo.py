@@ -181,6 +181,12 @@ class ServiceRepository(CatalogRepo):
         """Edge to a target outside the declared catalog (Stripe, Auth0, an
         upstream team's API, etc.). Identified by free-text name; the row
         carries an optional description but no service_id.
+
+        Uniqueness is case-insensitive (``Stripe`` and ``stripe`` collide).
+        The display name keeps whatever casing the caller provided -- the
+        ``ON CONFLICT`` target references the function-based unique index
+        ``kg_dependencies_external_name_lower_uniq``, so re-adding with a
+        different casing updates the existing row's description in place.
         """
         async with self.pool.acquire() as conn:
             await conn.execute(
@@ -190,7 +196,8 @@ class ServiceRepository(CatalogRepo):
                     source, last_updated
                 )
                 VALUES ($1, $2, $3, $4, now())
-                ON CONFLICT (from_service_id, to_external_name) DO UPDATE SET
+                ON CONFLICT (from_service_id, (lower(to_external_name))) WHERE to_external_name IS NOT NULL
+                DO UPDATE SET
                     to_external_description = EXCLUDED.to_external_description,
                     source = EXCLUDED.source,
                     last_updated = now()
@@ -223,11 +230,16 @@ class ServiceRepository(CatalogRepo):
         from_service_id: UUID,
         external_name: str,
     ) -> bool:
+        """Remove an external (free-text) dep, matched case-insensitively
+        against ``to_external_name``. Mirrors the case-insensitive uniqueness
+        on insert so the UI can pass back whatever casing the user typed."""
         async with self.pool.acquire() as conn:
             result = await conn.execute(
                 """
                 DELETE FROM kg_dependencies
-                WHERE from_service_id = $1 AND to_external_name = $2
+                WHERE from_service_id = $1
+                  AND to_external_name IS NOT NULL
+                  AND lower(to_external_name) = lower($2)
                 """,
                 from_service_id,
                 external_name,

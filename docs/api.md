@@ -202,18 +202,38 @@ talks to these endpoints:
 GET    /api/services/{service_id}/dependencies
 POST   /api/services/{service_id}/dependencies
 DELETE /api/services/{service_id}/dependencies/{to_service_id}
+DELETE /api/services/{service_id}/dependencies/external?name={external_name}
 ```
 
-POST body:
+POST body — exactly one of `to_service_id` (catalog edge) or
+`to_external_name` (free-text target outside the catalog):
 
 ```json
 { "to_service_id": "uuid" }
 ```
 
-The API rejects self-edges (`400`), unknown source/target services (`404`),
-and noops on duplicate edges (`ON CONFLICT DO UPDATE`). New edges get
-`source = 'manual'`. The org graph endpoint
-(`/api/organization/graph`) reads the same `kg_dependencies` table.
+```json
+{ "to_external_name": "Stripe API",
+  "to_external_description": "Payment intents (used by /checkout)" }
+```
+
+`to_external_name` is capped at 200 chars, `to_external_description` at
+2000. Names dedupe case-insensitively at the DB layer (a UI client trying
+to add `Stripe` after `stripe` updates the existing description in place
+rather than creating a second row). External dedup is enforced by a
+function-based unique index on `(from_service_id, lower(to_external_name))`.
+
+The API rejects self-edges (`400`), bodies that pass both or neither
+target field (`400`), unknown source/target services (`404`), and noops on
+duplicate edges. New edges get `source = 'manual'`. The org graph
+endpoint (`/api/organization/graph`) reads the same `kg_dependencies`
+table but excludes external rows because the graph only renders declared
+catalog nodes — external deps are visible only on the originating
+service's detail page.
+
+External-edge deletion uses a query parameter instead of a path segment
+so target names containing `/`, `?`, or `#` (e.g. `Twilio SMS / Voice`)
+don't break route matching. Matching is case-insensitive.
 
 ## Sources
 
