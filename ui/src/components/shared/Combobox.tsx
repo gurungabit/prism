@@ -97,10 +97,17 @@ export function Combobox({
 
   // Build (group | option) sequence for rendering and a parallel index
   // map of *just* the selectable option indices for keyboard nav.
+  //
+  // Disabled rows get ``selectableIndex: null`` so they never share an
+  // index with the next enabled row -- without this, a disabled row
+  // and the next enabled row both got the current counter value (the
+  // counter only ticks on enabled rows), which made the visual
+  // highlight light up two siblings at once and disagreed with
+  // ``aria-activedescendant``.
   const flat = useMemo(() => {
     const out: (
       | { kind: "group"; label: string }
-      | { kind: "option"; option: ComboboxOption; selectableIndex: number }
+      | { kind: "option"; option: ComboboxOption; selectableIndex: number | null }
     )[] = [];
     let lastGroup: string | undefined;
     let selectableIndex = 0;
@@ -112,8 +119,12 @@ export function Combobox({
         // Reset so re-introducing a group later still emits its header.
         lastGroup = undefined;
       }
-      out.push({ kind: "option", option: o, selectableIndex });
-      if (!o.disabled) selectableIndex += 1;
+      if (o.disabled) {
+        out.push({ kind: "option", option: o, selectableIndex: null });
+      } else {
+        out.push({ kind: "option", option: o, selectableIndex });
+        selectableIndex += 1;
+      }
     }
     return out;
   }, [filtered]);
@@ -260,7 +271,11 @@ export function Combobox({
                   </div>
                 );
               }
-              const isHighlighted = row.selectableIndex === highlight;
+              // Disabled rows have ``selectableIndex === null`` so the
+              // strict-equality check excludes them from highlight.
+              const isHighlighted =
+                row.selectableIndex !== null &&
+                row.selectableIndex === highlight;
               const isSelected = row.option.id === value;
               return (
                 <button
@@ -274,7 +289,14 @@ export function Combobox({
                   role="option"
                   aria-selected={isSelected}
                   aria-disabled={row.option.disabled || undefined}
-                  onMouseEnter={() => setHighlight(row.selectableIndex)}
+                  onMouseEnter={() => {
+                    // Skip disabled rows -- moving the highlight onto a
+                    // non-selectable target would also desync from
+                    // ``aria-activedescendant``.
+                    if (row.selectableIndex !== null) {
+                      setHighlight(row.selectableIndex);
+                    }
+                  }}
                   onClick={() => commit(row.option)}
                   className={`
                     w-full text-left px-3 py-2 flex items-start gap-2

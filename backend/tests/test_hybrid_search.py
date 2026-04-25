@@ -1,6 +1,10 @@
 from uuid import UUID
 
-from src.retrieval.hybrid_search import HybridSearchEngine, _build_scope_clauses
+from src.retrieval.hybrid_search import (
+    HybridSearchEngine,
+    _build_scope_clauses,
+    _validate_scope_against_lookups,
+)
 
 
 def test_build_filters_supports_scalar_values():
@@ -70,6 +74,95 @@ def test_scope_filter_builds_nullable_clauses():
 def test_scope_filter_empty_returns_no_clauses():
     assert _build_scope_clauses({}) == []
     assert _build_scope_clauses({"team_ids": [], "service_ids": None}) == []
+
+
+# ----- _validate_scope_against_lookups: cross-org guard -----
+#
+# These tests exercise the pure validation step in isolation -- the DB
+# lookup is faked via in-memory dicts so the test runs without Postgres.
+# Each one targets a specific leak shape codex flagged in round 4:
+# scope IDs that resolve cleanly (the row exists somewhere in the
+# catalog) but belong to a *different* org than the one the caller
+# pinned.
+
+ORG_A = "11111111-1111-1111-1111-111111111111"
+ORG_B = "22222222-2222-2222-2222-222222222222"
+TEAM_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+TEAM_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+SVC_A = "11aaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+SVC_B = "22bbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+
+def test_validate_scope_drops_cross_org_service_id():
+    """Stale bookmark: caller asks for org A but service belongs to org B.
+
+    Before the round-4 fix, the service resolved cleanly so we added
+    its parent team (team_B) to ``team_ids`` and kept the service in
+    the list. The OpenSearch clauses then admitted org A's org-scoped
+    chunks via the ``IS NULL`` branches even though no real chunk
+    matched team_B/SVC_B under org A. The expected behavior is
+    match-nothing because the caller's narrowing has zero in-org hits.
+    """
+    result = _validate_scope_against_lookups(
+        {"org_id": ORG_A, "service_ids": [SVC_B]},
+        service_lookups={SVC_B: (TEAM_B, ORG_B)},
+        team_lookups={},
+    )
+    assert result.get("__match_nothing__") is True
+
+
+def test_validate_scope_drops_cross_org_team_id():
+    """Same shape on the team axis: a team belonging to a different
+    org should not widen the requested org's scope."""
+    result = _validate_scope_against_lookups(
+        {"org_id": ORG_A, "team_ids": [TEAM_B]},
+        service_lookups={},
+        team_lookups={TEAM_B: ORG_B},
+    )
+    assert result.get("__match_nothing__") is True
+
+
+def test_validate_scope_keeps_in_org_targets_and_drops_cross_org_only():
+    """Mixed selection: the in-org targets survive; the cross-org ones
+    are quietly dropped. The team_ids list ends up as the union of the
+    surviving explicit teams + the parent teams of the surviving
+    services, which is the same shape ``_expand_scope_with_service_parents``
+    would have produced under the legacy code for an in-org-only
+    request."""
+    result = _validate_scope_against_lookups(
+        {
+            "org_id": ORG_A,
+            "service_ids": [SVC_A, SVC_B],  # SVC_B is cross-org
+            "team_ids": [TEAM_A, TEAM_B],   # TEAM_B is cross-org
+        },
+        service_lookups={
+            SVC_A: (TEAM_A, ORG_A),
+            SVC_B: (TEAM_B, ORG_B),
+        },
+        team_lookups={
+            TEAM_A: ORG_A,
+            TEAM_B: ORG_B,
+        },
+    )
+    assert "__match_nothing__" not in result
+    assert result["service_ids"] == [SVC_A]
+    assert result["team_ids"] == sorted({TEAM_A})
+
+
+def test_validate_scope_no_org_id_skips_cross_org_check():
+    """Without an explicit ``org_id`` the caller is in legacy un-scoped
+    mode -- there's no "wrong org" to drop against. IDs still need to
+    resolve, but otherwise pass through."""
+    result = _validate_scope_against_lookups(
+        {"service_ids": [SVC_A, SVC_B]},
+        service_lookups={
+            SVC_A: (TEAM_A, ORG_A),
+            SVC_B: (TEAM_B, ORG_B),
+        },
+        team_lookups={},
+    )
+    assert "__match_nothing__" not in result
+    assert sorted(result["service_ids"]) == sorted([SVC_A, SVC_B])
 
 
 def test_unresolved_service_id_emits_match_nothing_clause():

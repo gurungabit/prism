@@ -33,6 +33,35 @@ import {
   type ValidateSourceBody,
 } from "../lib/api";
 
+// Catalog topology = the org/team/service hierarchy + the dependency
+// graph derived from it. Every mutation that adds, renames, or removes
+// a node ripples through the same set of caches:
+//
+//   - ``orgs`` / ``org``  : org list + detail
+//   - ``teams-for-org`` / ``team`` / ``teams`` : team list + detail
+//     + the legacy graph endpoint
+//   - ``services-for-team`` / ``services-for-org`` / ``service-by-id``:
+//     team-level + org-wide service lists, plus the per-service detail
+//     used by the service detail page
+//   - ``organization-graph``: the React Flow canvas data + the catalog
+//     dep picker on the service detail page; both depend on every
+//     node in the hierarchy
+//
+// Round-3 added this for service mutations only. Codex noticed that
+// org / team mutations still left ``services-for-org`` and
+// ``organization-graph`` stale -- deleting a team cascades all its
+// services in Postgres, but TanStack still served the stale list until
+// the staleTime expired or the user reloaded. This helper closes that
+// loop by invalidating the full topology from any catalog mutation.
+function _invalidateCatalogTopology(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ["orgs"] });
+  qc.invalidateQueries({ queryKey: ["teams-for-org"] });
+  qc.invalidateQueries({ queryKey: ["teams"] });
+  qc.invalidateQueries({ queryKey: ["services-for-team"] });
+  qc.invalidateQueries({ queryKey: ["services-for-org"] });
+  qc.invalidateQueries({ queryKey: ["organization-graph"] });
+}
+
 // ---------- orgs ----------
 
 export function useOrgs() {
@@ -56,7 +85,7 @@ export function useCreateOrg() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (name: string) => createOrg(name),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["orgs"] }),
+    onSuccess: () => _invalidateCatalogTopology(qc),
   });
 }
 
@@ -65,8 +94,8 @@ export function useUpdateOrg() {
   return useMutation({
     mutationFn: ({ orgId, name }: { orgId: string; name: string }) => updateOrg(orgId, name),
     onSuccess: (_data, vars) => {
-      qc.invalidateQueries({ queryKey: ["orgs"] });
       qc.invalidateQueries({ queryKey: ["org", vars.orgId] });
+      _invalidateCatalogTopology(qc);
     },
   });
 }
@@ -75,7 +104,7 @@ export function useDeleteOrg() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (orgId: string) => deleteOrg(orgId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["orgs"] }),
+    onSuccess: () => _invalidateCatalogTopology(qc),
   });
 }
 
@@ -111,7 +140,7 @@ export function useCreateTeam() {
     }) => createTeam(orgId, body),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["teams-for-org", vars.orgId] });
-      qc.invalidateQueries({ queryKey: ["teams"] });
+      _invalidateCatalogTopology(qc);
     },
   });
 }
@@ -128,8 +157,7 @@ export function useUpdateTeam() {
     }) => updateTeam(teamId, body),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["team", vars.teamId] });
-      qc.invalidateQueries({ queryKey: ["teams-for-org"] });
-      qc.invalidateQueries({ queryKey: ["teams"] });
+      _invalidateCatalogTopology(qc);
     },
   });
 }
@@ -139,8 +167,10 @@ export function useDeleteTeam() {
   return useMutation({
     mutationFn: (teamId: string) => deleteTeam(teamId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["teams-for-org"] });
-      qc.invalidateQueries({ queryKey: ["teams"] });
+      // A team delete cascades all of its services in Postgres, so
+      // ``services-for-team``/``-for-org``/``organization-graph`` all
+      // need to refetch -- the topology helper handles that.
+      _invalidateCatalogTopology(qc);
     },
   });
 }
@@ -165,20 +195,6 @@ export function useServiceById(serviceId: string | undefined) {
   });
 }
 
-// Service mutations need to invalidate every cache that lists services:
-//   - ``services-for-team``: per-team listing on the team detail page.
-//   - ``services-for-org``:  the org-wide list ScopeSelector hydrates so
-//     Analyze/Search/Chat scope dropdowns see new services without a reload.
-//   - ``organization-graph``: feeds DependenciesSection's catalog picker
-//     and the org graph view; a fresh service has to show up in both.
-//   - ``teams``: the legacy graph endpoint still embeds service names.
-function _invalidateAllServiceCaches(qc: ReturnType<typeof useQueryClient>) {
-  qc.invalidateQueries({ queryKey: ["services-for-team"] });
-  qc.invalidateQueries({ queryKey: ["services-for-org"] });
-  qc.invalidateQueries({ queryKey: ["organization-graph"] });
-  qc.invalidateQueries({ queryKey: ["teams"] });
-}
-
 export function useCreateService() {
   const qc = useQueryClient();
   return useMutation({
@@ -191,7 +207,7 @@ export function useCreateService() {
     }) => createService(teamId, body),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["services-for-team", vars.teamId] });
-      _invalidateAllServiceCaches(qc);
+      _invalidateCatalogTopology(qc);
     },
   });
 }
@@ -208,7 +224,7 @@ export function useUpdateService() {
     }) => updateService(serviceId, body),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["service-by-id", vars.serviceId] });
-      _invalidateAllServiceCaches(qc);
+      _invalidateCatalogTopology(qc);
     },
   });
 }
@@ -218,7 +234,7 @@ export function useDeleteService() {
   return useMutation({
     mutationFn: (serviceId: string) => deleteService(serviceId),
     onSuccess: () => {
-      _invalidateAllServiceCaches(qc);
+      _invalidateCatalogTopology(qc);
     },
   });
 }

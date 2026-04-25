@@ -292,79 +292,233 @@ class HybridSearchEngine:
 async def _expand_scope_with_service_parents(
     scope_filter: dict | None,
 ) -> dict | None:
-    """Resolve ``service_ids`` against the catalog and pin the team scope.
+    """Resolve scope IDs against the catalog and constrain by ``org_id``.
 
-    Two jobs:
+    Three jobs, all of them necessary to keep retrieval honest:
 
     1. Add parent team_ids for the resolvable services. Without this the
        team clause's ``IS NULL OR team_id IN (...)`` branch admits team-
        scoped chunks for *other* teams in the same org -- the IS NULL
        branch is too permissive when the caller's intent was "chunks
        reachable from these services".
-    2. Drop *unresolved* service IDs from the returned filter and -- if
-       the caller asked for service scope but none of the IDs resolve --
-       set a sentinel so the clause builder emits match-nothing. Without
-       step 2 a stale UUID (deleted service, bookmark from another org)
-       would leave the unresolved ID in ``service_ids``, the clause
-       becomes ``service_id IS NULL OR service_id IN [unknown-uuid]``,
-       and the IS NULL branch admits every team-scoped chunk in the
-       broader scope.
+    2. Drop *unresolved* service / team IDs from the returned filter --
+       a stale UUID (deleted service, bookmark from another org) would
+       otherwise leave the unresolved ID in the list. The clause becomes
+       ``service_id IS NULL OR service_id IN [unknown-uuid]`` and the
+       IS NULL branch admits every team-scoped chunk in the broader
+       scope.
+    3. Cross-org guard: when the caller pinned ``org_id``, drop any
+       service whose parent team belongs to a *different* org and any
+       team that belongs to a different org. Without this, a stale
+       bookmark with ``org_id = A`` and ``service_id`` from org B
+       resolves cleanly (the service exists), the parent team is added
+       to ``team_ids``, and the resulting OpenSearch clauses widen org
+       A's match set to org A's org-scoped chunks. The expected
+       behavior is "no results" because the caller's filter has no
+       in-org targets.
 
-    Returns the scope dict (possibly mutated copy) or ``None`` when no
-    scope was supplied.
+    If no requested service / team survives validation, the filter is
+    pinned to ``__match_nothing__`` so the clause builder emits a
+    match-none clause.
+
+    The async DB-backed parts (looking up services + teams) are
+    decoupled from the pure validation logic so the validation can be
+    unit-tested without Postgres.
     """
     if not scope_filter:
         return scope_filter
     service_ids = _collect_ids(scope_filter.get("service_ids"))
-    if not service_ids:
+    team_ids = _collect_ids(scope_filter.get("team_ids"))
+    if not service_ids and not team_ids:
         return scope_filter
 
-    # Lazy import to avoid a circular dep at module load time.
+    service_lookups, team_lookups = await _resolve_scope_lookups(
+        service_ids, team_ids
+    )
+    return _validate_scope_against_lookups(
+        scope_filter,
+        service_lookups=service_lookups,
+        team_lookups=team_lookups,
+    )
+
+
+async def _resolve_scope_lookups(
+    service_ids: list[str],
+    team_ids: list[str],
+) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
+    """Pull (team_id, org_id) for each service and org_id for each team.
+
+    Returns ``(service_lookups, team_lookups)`` where:
+      - ``service_lookups[service_id] = (team_id, org_id)`` for every
+        service whose ID parsed as UUID, exists, and has a resolvable
+        parent team.
+      - ``team_lookups[team_id] = org_id`` for every team that exists.
+
+    IDs that don't parse, don't exist, or don't have a parent (orphan
+    services without a team -- shouldn't happen given the FK, but we
+    treat it as "not validated") are simply absent from the maps.
+    Validation downstream treats absence as "drop this ID".
+    """
+    if not service_ids and not team_ids:
+        return {}, {}
+
+    # Lazy imports to avoid a circular dep at module load time.
     from src.catalog.service_repo import ServiceRepository
+    from src.catalog.team_repo import TeamRepository
     from uuid import UUID as _UUID
 
-    repo = await ServiceRepository.create()
+    service_repo = await ServiceRepository.create()
+    team_repo = await TeamRepository.create()
     try:
-        parent_team_ids: set[str] = set()
-        resolved_service_ids: set[str] = set()
+        service_lookups: dict[str, tuple[str, str]] = {}
+        # We may need a team's org for both validation paths. Memoize so
+        # a service whose parent team is also explicitly in ``team_ids``
+        # only costs one query.
+        team_org_cache: dict[str, str] = {}
+
+        async def _team_org(team_id: str) -> str | None:
+            if team_id in team_org_cache:
+                return team_org_cache[team_id]
+            try:
+                t = await team_repo.get(_UUID(team_id))
+            except (ValueError, TypeError):
+                return None
+            if t is None:
+                return None
+            org = str(t.org_id)
+            team_org_cache[team_id] = org
+            return org
+
         for sid in service_ids:
             try:
-                service = await repo.get(_UUID(sid))
+                svc = await service_repo.get(_UUID(sid))
             except (ValueError, TypeError):
                 continue
-            if service is None:
+            if svc is None or svc.team_id is None:
                 continue
-            resolved_service_ids.add(str(service.id))
-            if service.team_id is not None:
-                parent_team_ids.add(str(service.team_id))
+            team_id = str(svc.team_id)
+            org = await _team_org(team_id)
+            if org is None:
+                continue
+            service_lookups[str(svc.id)] = (team_id, org)
+
+        team_lookups: dict[str, str] = {}
+        for tid in team_ids:
+            org = await _team_org(tid)
+            if org is None:
+                continue
+            team_lookups[tid] = org
     finally:
-        await repo.close()
+        await team_repo.close()
+        await service_repo.close()
+
+    return service_lookups, team_lookups
+
+
+def _validate_scope_against_lookups(
+    scope_filter: dict,
+    *,
+    service_lookups: dict[str, tuple[str, str]],
+    team_lookups: dict[str, str],
+) -> dict:
+    """Pure validation: drop IDs that don't belong to the requested org,
+    derive parent teams for surviving services, and emit the
+    ``__match_nothing__`` sentinel if nothing the caller asked for
+    survives.
+
+    The function is intentionally synchronous and side-effect-free so it
+    can be unit-tested against in-memory lookup tables without Postgres.
+    """
+    requested_service_ids = _collect_ids(scope_filter.get("service_ids"))
+    requested_team_ids = _collect_ids(scope_filter.get("team_ids"))
+    requested_org = scope_filter.get("org_id")
+    expected_org = str(requested_org) if requested_org else None
+
+    resolved_service_ids: set[str] = set()
+    parent_team_ids: set[str] = set()
+    for sid in requested_service_ids:
+        info = service_lookups.get(sid)
+        if info is None:
+            continue
+        team_id, svc_org = info
+        if expected_org is not None and svc_org != expected_org:
+            # Cross-org service ID: silently dropped. Logged so an
+            # operator looking at retrieval traces can see the gap.
+            log.warning(
+                "scope_service_id_dropped_cross_org",
+                service_id=sid,
+                expected_org=expected_org,
+                actual_org=svc_org,
+            )
+            continue
+        resolved_service_ids.add(sid)
+        parent_team_ids.add(team_id)
+
+    resolved_team_ids: set[str] = set()
+    for tid in requested_team_ids:
+        team_org = team_lookups.get(tid)
+        if team_org is None:
+            continue
+        if expected_org is not None and team_org != expected_org:
+            log.warning(
+                "scope_team_id_dropped_cross_org",
+                team_id=tid,
+                expected_org=expected_org,
+                actual_org=team_org,
+            )
+            continue
+        resolved_team_ids.add(tid)
 
     expanded = dict(scope_filter)
 
-    if not resolved_service_ids:
-        # Caller picked a specific set of services, none of which exist
-        # (stale bookmark, cross-org reference, deleted services). The
-        # safe answer is "no results" -- silently falling back to org or
-        # team scope would surface chunks the user didn't ask for.
-        log.warning(
-            "scope_service_ids_all_unresolved",
-            requested=len(service_ids),
-        )
+    asked_for_services = bool(requested_service_ids)
+    asked_for_teams = bool(requested_team_ids)
+    services_empty_after = asked_for_services and not resolved_service_ids
+    teams_empty_after = asked_for_teams and not resolved_team_ids
+
+    # ``__match_nothing__`` fires when every narrowing axis the caller
+    # specified resolves to zero. If the caller only narrowed by
+    # services and none survived, that's match-nothing -- same for
+    # teams-only. Mixed (services + teams) match-nothings only when
+    # *both* survived to zero, because either one alone surviving is
+    # still a real (narrower) scope to honor.
+    if asked_for_services and asked_for_teams:
+        if services_empty_after and teams_empty_after:
+            log.warning("scope_all_targets_dropped")
+            expanded["__match_nothing__"] = True
+            return expanded
+    elif asked_for_services and services_empty_after:
+        log.warning("scope_service_ids_all_unresolved", requested=len(requested_service_ids))
+        expanded["__match_nothing__"] = True
+        return expanded
+    elif asked_for_teams and teams_empty_after:
+        log.warning("scope_team_ids_all_unresolved", requested=len(requested_team_ids))
         expanded["__match_nothing__"] = True
         return expanded
 
-    if len(resolved_service_ids) != len(service_ids):
-        log.warning(
-            "scope_service_ids_partially_resolved",
-            requested=len(service_ids),
-            resolved=len(resolved_service_ids),
-        )
+    if asked_for_services:
+        expanded["service_ids"] = sorted(resolved_service_ids)
+        if len(resolved_service_ids) != len(requested_service_ids):
+            log.warning(
+                "scope_service_ids_partially_resolved",
+                requested=len(requested_service_ids),
+                resolved=len(resolved_service_ids),
+            )
 
-    expanded["service_ids"] = sorted(resolved_service_ids)
-    if parent_team_ids:
-        existing_teams = set(_collect_ids(scope_filter.get("team_ids")))
-        expanded["team_ids"] = sorted(existing_teams | parent_team_ids)
+    if asked_for_teams or parent_team_ids:
+        # Surviving explicit teams + parent teams of surviving services.
+        # Dropping the explicit team list when the caller passed one but
+        # nothing survived would silently widen the scope; we already
+        # bailed to match_nothing in that branch above.
+        merged_teams = resolved_team_ids | parent_team_ids
+        expanded["team_ids"] = sorted(merged_teams)
+        if asked_for_teams and len(resolved_team_ids) != len(requested_team_ids):
+            log.warning(
+                "scope_team_ids_partially_resolved",
+                requested=len(requested_team_ids),
+                resolved=len(resolved_team_ids),
+            )
+
     return expanded
 
 
