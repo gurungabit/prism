@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 
 import { Combobox } from "../shared/Combobox";
 import { Skeleton } from "../shared/Skeleton";
@@ -121,44 +122,82 @@ export function ScopeSelector({ value, onChange, compact = false }: Props) {
         </div>
       )}
 
-      {value.org_id && (
-        <>
-          <div className="space-y-1">
-            <label className={labelClass}>
-              Teams (optional, leave blank for all)
-            </label>
-            <MultiSelect
-              options={teamList.map((t) => ({ id: t.id, label: t.name }))}
-              selected={value.team_ids}
-              onChange={(team_ids) =>
-                onChange({ ...value, team_ids, service_ids: [] })
-              }
-              loading={teams.isLoading}
-              placeholder="Pick one or more teams…"
-            />
-          </div>
+      {value.org_id && (() => {
+        const teamsLoading = teams.isLoading;
+        const servicesLoading = services.isLoading;
+        const noTeams = !teamsLoading && teamList.length === 0;
+        const noServices = !servicesLoading && serviceList.length === 0;
 
-          <div className="space-y-1">
-            <label className={labelClass}>
-              Services (optional, leave blank for all)
-            </label>
-            <MultiSelect
-              options={visibleServices.map((s) => ({
-                id: s.id,
-                label: s.name,
-              }))}
-              selected={value.service_ids}
-              onChange={(service_ids) => onChange({ ...value, service_ids })}
-              loading={services.isLoading}
-              placeholder={
-                visibleServices.length === 0
-                  ? "No services in this scope"
-                  : "Pick one or more services…"
-              }
-            />
-          </div>
-        </>
-      )}
+        // When the pinned org has zero teams *and* zero services there
+        // is nothing the user can narrow by. Showing the two
+        // "leave blank for all" rows under that condition is
+        // confusing -- they read as inert form fields with nothing to
+        // pick. Replace them with a single empty-state hint that
+        // points at the Organization page where the catalog gets
+        // populated.
+        if (noTeams && noServices) {
+          return (
+            <div className="rounded-md border border-dashed border-zinc-300/60 dark:border-zinc-700/40 px-3 py-2.5 text-[12px] text-zinc-500 dark:text-zinc-400">
+              <p>
+                This org has no teams or services declared yet, so the
+                only available scope is the org itself.{" "}
+                <Link
+                  to="/organization"
+                  className="text-[var(--color-accent)] dark:text-[var(--color-accent-dark)] hover:underline"
+                >
+                  Declare teams &amp; services
+                </Link>{" "}
+                to narrow retrieval further.
+              </p>
+            </div>
+          );
+        }
+
+        return (
+          <>
+            <div className="space-y-1">
+              <label className={labelClass}>
+                Teams (optional, leave blank for all)
+              </label>
+              <MultiSelect
+                options={teamList.map((t) => ({ id: t.id, label: t.name }))}
+                selected={value.team_ids}
+                onChange={(team_ids) =>
+                  onChange({ ...value, team_ids, service_ids: [] })
+                }
+                loading={teamsLoading}
+                placeholder={
+                  noTeams
+                    ? "No teams in this org yet"
+                    : "Pick one or more teams…"
+                }
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className={labelClass}>
+                Services (optional, leave blank for all)
+              </label>
+              <MultiSelect
+                options={visibleServices.map((s) => ({
+                  id: s.id,
+                  label: s.name,
+                }))}
+                selected={value.service_ids}
+                onChange={(service_ids) =>
+                  onChange({ ...value, service_ids })
+                }
+                loading={servicesLoading}
+                placeholder={
+                  visibleServices.length === 0
+                    ? "No services in this scope"
+                    : "Pick one or more services…"
+                }
+              />
+            </div>
+          </>
+        );
+      })()}
     </div>
   );
 }
