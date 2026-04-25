@@ -343,11 +343,17 @@ export function deleteService(serviceId: string) {
 
 // ── Catalog: service dependencies (manual) ───────────
 
+// ``kind`` distinguishes deps wired to a declared catalog service
+// (``"service"``) from free-text targets outside the catalog
+// (``"external"``). External deps don't have a service_id or team_name;
+// they carry an optional description instead.
 export interface ServiceDependency {
-  to_service_id: string;
+  kind: "service" | "external";
+  to_service_id: string | null;
   to_service_name: string;
   team_id: string | null;
   team_name: string | null;
+  description: string;
   source: string;
   last_updated: string | null;
 }
@@ -365,9 +371,33 @@ export function addServiceDependency(serviceId: string, toServiceId: string) {
   });
 }
 
+export function addExternalServiceDependency(
+  serviceId: string,
+  externalName: string,
+  externalDescription: string,
+) {
+  return request<{ status: string }>(`/api/services/${serviceId}/dependencies`, {
+    method: "POST",
+    body: JSON.stringify({
+      to_external_name: externalName,
+      to_external_description: externalDescription,
+    }),
+  });
+}
+
 export function deleteServiceDependency(serviceId: string, toServiceId: string) {
   return request<{ status: string }>(
     `/api/services/${serviceId}/dependencies/${toServiceId}`,
+    { method: "DELETE" },
+  );
+}
+
+export function deleteExternalServiceDependency(
+  serviceId: string,
+  externalName: string,
+) {
+  return request<{ status: string }>(
+    `/api/services/${serviceId}/dependencies/external/${encodeURIComponent(externalName)}`,
     { method: "DELETE" },
   );
 }

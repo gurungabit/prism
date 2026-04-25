@@ -328,7 +328,17 @@ async def delete_service(service_id: UUID) -> dict[str, str]:
 
 
 class ServiceDependencyCreateBody(BaseModel):
-    to_service_id: UUID
+    """Add an internal (catalog) or external dependency edge.
+
+    Exactly one of ``to_service_id`` or ``to_external_name`` must be set:
+    the first wires the edge to a declared catalog service; the second
+    records a free-text target outside the catalog (Stripe, Auth0, an
+    upstream team's API, etc.) along with an optional description.
+    """
+
+    to_service_id: UUID | None = None
+    to_external_name: str | None = None
+    to_external_description: str = ""
 
 
 @router.get("/services/{service_id}/dependencies")
@@ -349,21 +359,42 @@ async def add_service_dependency(
     service_id: UUID,
     body: ServiceDependencyCreateBody,
 ) -> dict[str, str]:
-    if service_id == body.to_service_id:
-        raise HTTPException(status_code=400, detail="A service cannot depend on itself")
+    has_internal = body.to_service_id is not None
+    has_external = bool(body.to_external_name and body.to_external_name.strip())
+    if has_internal == has_external:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide exactly one of to_service_id or to_external_name",
+        )
     repo = await ServiceRepository.create()
     try:
         src = await repo.get(service_id)
         if src is None:
             raise HTTPException(status_code=404, detail="Source service not found")
-        dst = await repo.get(body.to_service_id)
-        if dst is None:
-            raise HTTPException(status_code=404, detail="Target service not found")
-        # ``source_doc='manual'`` marks the edge as user-entered so we can
-        # visually distinguish hand-drawn edges from any future pipeline-added
-        # ones -- today every edge is manual, but the column is preserved so
-        # the UI can later badge or filter by origin.
-        await repo.add_dependency(service_id, body.to_service_id, source_doc="manual")
+
+        if has_internal:
+            assert body.to_service_id is not None  # narrow for type-checkers
+            if service_id == body.to_service_id:
+                raise HTTPException(
+                    status_code=400, detail="A service cannot depend on itself"
+                )
+            dst = await repo.get(body.to_service_id)
+            if dst is None:
+                raise HTTPException(status_code=404, detail="Target service not found")
+            # ``source='manual'`` marks the edge as user-entered so we can
+            # visually distinguish hand-drawn edges from any future
+            # automated source.
+            await repo.add_dependency(
+                service_id, body.to_service_id, source_doc="manual"
+            )
+        else:
+            assert body.to_external_name is not None
+            await repo.add_external_dependency(
+                service_id,
+                body.to_external_name.strip(),
+                body.to_external_description.strip(),
+                source_doc="manual",
+            )
         return {"status": "added"}
     finally:
         await repo.close()
@@ -374,9 +405,26 @@ async def delete_service_dependency(
     service_id: UUID,
     to_service_id: UUID,
 ) -> dict[str, str]:
+    """Remove an internal (catalog) dependency edge."""
     repo = await ServiceRepository.create()
     try:
         removed = await repo.remove_dependency(service_id, to_service_id)
+        if not removed:
+            raise HTTPException(status_code=404, detail="Dependency not found")
+        return {"status": "removed"}
+    finally:
+        await repo.close()
+
+
+@router.delete("/services/{service_id}/dependencies/external/{external_name}")
+async def delete_external_service_dependency(
+    service_id: UUID,
+    external_name: str,
+) -> dict[str, str]:
+    """Remove an external (free-text) dependency edge."""
+    repo = await ServiceRepository.create()
+    try:
+        removed = await repo.remove_external_dependency(service_id, external_name)
         if not removed:
             raise HTTPException(status_code=404, detail="Dependency not found")
         return {"status": "removed"}

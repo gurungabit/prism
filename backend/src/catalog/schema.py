@@ -109,12 +109,27 @@ CREATE INDEX IF NOT EXISTS kg_documents_org_idx        ON kg_documents(org_id);
 CREATE INDEX IF NOT EXISTS kg_documents_team_idx       ON kg_documents(team_id);
 CREATE INDEX IF NOT EXISTS kg_documents_service_idx    ON kg_documents(service_id);
 
+-- Service dependencies. Edges have two flavours:
+--   * Internal -- ``to_service_id`` references another row in ``services``.
+--   * External -- ``to_external_name`` is a free-text label for something
+--     outside the declared catalog (Stripe, Auth0, an upstream team's API
+--     not yet declared, etc.). ``to_service_id`` is NULL in that case.
+-- A row is exactly one kind, enforced by the CHECK constraint.
 CREATE TABLE IF NOT EXISTS kg_dependencies (
-    from_service_id  UUID NOT NULL REFERENCES services(id) ON DELETE CASCADE,
-    to_service_id    UUID NOT NULL REFERENCES services(id) ON DELETE CASCADE,
-    source           TEXT NOT NULL DEFAULT '',
-    last_updated     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (from_service_id, to_service_id)
+    id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    from_service_id          UUID NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+    to_service_id            UUID REFERENCES services(id) ON DELETE CASCADE,
+    to_external_name         TEXT,
+    to_external_description  TEXT NOT NULL DEFAULT '',
+    source                   TEXT NOT NULL DEFAULT '',
+    last_updated             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (
+        (to_service_id IS NOT NULL AND to_external_name IS NULL)
+        OR
+        (to_service_id IS NULL AND to_external_name IS NOT NULL)
+    ),
+    UNIQUE (from_service_id, to_service_id),
+    UNIQUE (from_service_id, to_external_name)
 );
 CREATE INDEX IF NOT EXISTS kg_dependencies_to_idx ON kg_dependencies(to_service_id);
 """
