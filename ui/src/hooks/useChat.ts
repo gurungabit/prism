@@ -19,7 +19,10 @@ export function useChat() {
     return conv;
   }
 
-  async function sendMessage(content: string): Promise<string | null> {
+  async function sendMessage(
+    content: string,
+    scope?: { org_id?: string; team_ids: string[]; service_ids: string[] },
+  ): Promise<string | null> {
     const convId = useChatStore.getState().activeConversationId;
     if (!convId) return null;
 
@@ -34,11 +37,19 @@ export function useChat() {
 
     let backendConvId: string | null = null;
 
+    // Only forward a scope when ``org_id`` is present -- the backend needs
+    // it as the hard filter; without it we want the legacy un-scoped path.
+    const scopePayload = scope && scope.org_id ? scope : undefined;
+
     try {
       const res = await fetch(`${BASE_URL}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: content, conversation_id: convId }),
+        body: JSON.stringify({
+          message: content,
+          conversation_id: convId,
+          scope: scopePayload,
+        }),
       });
 
       if (!res.ok) throw new Error(`Chat API error: ${res.status}`);

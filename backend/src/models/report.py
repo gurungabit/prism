@@ -14,6 +14,14 @@ class AnalysisInput(BaseModel):
     known_teams: str = ""
     known_services: str = ""
     questions_to_answer: str = ""
+    # Scope for retrieval pushdown. ``org_id`` is required for scope to
+    # apply at all -- it pins all retrieval to a single org's chunks. The
+    # team / service lists are additional narrowing inside that org. Empty
+    # lists mean "all teams / all services within the org". When ``org_id``
+    # itself is None, retrieval falls back to the legacy un-scoped path.
+    org_id: str | None = None
+    team_ids: list[str] = Field(default_factory=list)
+    service_ids: list[str] = Field(default_factory=list)
 
 
 def build_analysis_brief(analysis_input: AnalysisInput) -> str:

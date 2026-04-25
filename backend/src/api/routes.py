@@ -42,6 +42,13 @@ class AnalyzeRequest(BaseModel):
     known_teams: str = ""
     known_services: str = ""
     questions_to_answer: str = ""
+    # Catalog-backed scope. ``org_id`` pins retrieval to a single org's
+    # chunks; ``team_ids`` / ``service_ids`` narrow further. Empty lists
+    # mean "all teams/services within the org". When ``org_id`` is None
+    # we fall back to the legacy un-scoped path.
+    org_id: str | None = None
+    team_ids: list[str] = []
+    service_ids: list[str] = []
     # Threading: when set, this run is a follow-up in an existing thread.
     # The backend loads the parent's (+ earlier turns') context before
     # kicking off the pipeline.
@@ -59,6 +66,9 @@ class AnalyzeRequest(BaseModel):
             known_teams=self.known_teams,
             known_services=self.known_services,
             questions_to_answer=self.questions_to_answer,
+            org_id=self.org_id,
+            team_ids=list(self.team_ids),
+            service_ids=list(self.service_ids),
         )
 
 
@@ -585,12 +595,21 @@ async def resolve_analysis_thread(analysis_id: str) -> dict:
 class ChatRequest(BaseModel):
     message: str
     conversation_id: str | None = None
+    # Optional catalog scope. Same shape as ``SearchRequest.scope``:
+    # ``{org_id, team_ids[], service_ids[]}``. When set, retrieval is
+    # pushed down into OpenSearch so chat answers only ground on chunks
+    # inside the user's selected org/team/service.
+    scope: dict | None = None
 
 
 @router.post("/chat")
 async def chat(request_body: ChatRequest, request: Request):
     async def event_generator():
-        async for event_data in chat_stream(request_body.message, request_body.conversation_id):
+        async for event_data in chat_stream(
+            request_body.message,
+            request_body.conversation_id,
+            scope=request_body.scope,
+        ):
             if await request.is_disconnected():
                 break
             yield event_data

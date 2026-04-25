@@ -31,10 +31,25 @@ async def retrieval_agent(state: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    # Pull declared scope from the analysis input so retrieval pushes down
+    # ``org_id`` / ``team_ids`` / ``service_ids`` into OpenSearch. Without
+    # this an analyze run could surface chunks from teams/services the user
+    # never asked about. ``org_id`` falsy => no scope (legacy behavior).
+    analysis_input = state.get("analysis_input") or {}
+    scope_filter: dict | None = None
+    org_id = analysis_input.get("org_id") if isinstance(analysis_input, dict) else None
+    if org_id:
+        scope_filter = {
+            "org_id": org_id,
+            "team_ids": analysis_input.get("team_ids") or [],
+            "service_ids": analysis_input.get("service_ids") or [],
+        }
+
     search_engine = HybridSearchEngine()
     chunks = await search_engine.search(
         requirement=requirement,
         expand=True,
+        scope_filter=scope_filter,
     )
 
     if on_step:

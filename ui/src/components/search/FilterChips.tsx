@@ -1,8 +1,10 @@
+// FilterChips now only carries the doc-type chip group; team / service
+// filtering moved to the catalog-backed ``ScopeSelector`` (which pushes
+// the IDs into OpenSearch via the ``scope`` field rather than fuzzy
+// hint strings).
 interface FilterChipsProps {
   filters: {
     entityTypes: string[];
-    teams: string[];
-    services: string[];
   };
   selected: Record<string, string[]>;
   onChange: (selected: Record<string, string[]>) => void;
@@ -65,18 +67,6 @@ export function FilterChips({ filters, selected, onChange }: FilterChipsProps) {
         options={filters.entityTypes}
         selected={selected["entityTypes"] || []}
         onToggle={(v) => toggle("entityTypes", v)}
-      />
-      <ChipGroup
-        label="Team"
-        options={filters.teams}
-        selected={selected["teams"] || []}
-        onToggle={(v) => toggle("teams", v)}
-      />
-      <ChipGroup
-        label="Service"
-        options={filters.services}
-        selected={selected["services"] || []}
-        onToggle={(v) => toggle("services", v)}
       />
     </div>
   );

@@ -4,6 +4,7 @@ import { useSearchMutation } from "../hooks/useSearch";
 import { SearchBar } from "../components/search/SearchBar";
 import { FilterChips } from "../components/search/FilterChips";
 import { ResultCard } from "../components/search/ResultCard";
+import { ScopeSelector } from "../components/catalog/ScopeSelector";
 import { EmptyState } from "../components/shared/EmptyState";
 import { Skeleton } from "../components/shared/Skeleton";
 import { Search } from "lucide-react";
@@ -36,8 +37,6 @@ export function SearchPage() {
 
   const selectedFilters: Record<string, string[]> = {
     entityTypes: searchState.entityTypes,
-    teams: searchState.teams,
-    services: searchState.services,
   };
 
   function updateRouteSearch(
@@ -45,8 +44,9 @@ export function SearchPage() {
       q?: string;
       page?: number;
       entityTypes?: string[];
-      teams?: string[];
-      services?: string[];
+      orgId?: string;
+      teamIds?: string[];
+      serviceIds?: string[];
     },
     replace = false,
   ) {
@@ -57,8 +57,9 @@ export function SearchPage() {
         q: next.q?.trim() ? next.q.trim() : undefined,
         page: next.q?.trim() ? Math.max(next.page ?? 1, 1) : undefined,
         entityTypes: next.entityTypes?.length ? next.entityTypes : undefined,
-        teams: next.teams?.length ? next.teams : undefined,
-        services: next.services?.length ? next.services : undefined,
+        orgId: next.orgId || undefined,
+        teamIds: next.teamIds?.length ? next.teamIds : undefined,
+        serviceIds: next.serviceIds?.length ? next.serviceIds : undefined,
       },
     });
   }
@@ -66,12 +67,23 @@ export function SearchPage() {
   function performSearch(nextQuery: string, nextPage = 1) {
     const apiFilters: Record<string, unknown> = {};
     if (selectedFilters["entityTypes"]?.length) apiFilters["doc_type"] = selectedFilters["entityTypes"];
-    if (selectedFilters["teams"]?.length) apiFilters["team_hint"] = selectedFilters["teams"];
-    if (selectedFilters["services"]?.length) apiFilters["service_hint"] = selectedFilters["services"];
+
+    // Catalog scope -- pushed down into OpenSearch via the ``scope`` field.
+    // Empty ``orgId`` means un-scoped retrieval (legacy path, the whole
+    // corpus). When set, ``team_ids`` / ``service_ids`` further narrow
+    // within the org. Empty arrays mean "all teams / all services in org".
+    const scope = searchState.orgId
+      ? {
+          org_id: searchState.orgId,
+          team_ids: searchState.teamIds,
+          service_ids: searchState.serviceIds,
+        }
+      : undefined;
 
     search.mutate({
       query: nextQuery,
       filters: apiFilters,
+      scope,
       page: nextPage,
       page_size: SEARCH_PAGE_SIZE,
     });
@@ -83,8 +95,9 @@ export function SearchPage() {
         q: nextQuery,
         page: 1,
         entityTypes: selectedFilters.entityTypes,
-        teams: selectedFilters.teams,
-        services: selectedFilters.services,
+        orgId: searchState.orgId,
+        teamIds: searchState.teamIds,
+        serviceIds: searchState.serviceIds,
       },
       true,
     );
@@ -97,8 +110,9 @@ export function SearchPage() {
         q: searchState.q,
         page: nextPage,
         entityTypes: selectedFilters.entityTypes,
-        teams: selectedFilters.teams,
-        services: selectedFilters.services,
+        orgId: searchState.orgId,
+        teamIds: searchState.teamIds,
+        serviceIds: searchState.serviceIds,
       },
       false,
     );
@@ -117,8 +131,9 @@ export function SearchPage() {
     searchState.q,
     searchState.page,
     searchState.entityTypes,
-    searchState.teams,
-    searchState.services,
+    searchState.orgId,
+    searchState.teamIds,
+    searchState.serviceIds,
   ]);
 
   function handleFilterChange(nextSelected: Record<string, string[]>) {
@@ -127,8 +142,27 @@ export function SearchPage() {
         q: searchState.q,
         page: 1,
         entityTypes: nextSelected.entityTypes ?? [],
-        teams: nextSelected.teams ?? [],
-        services: nextSelected.services ?? [],
+        orgId: searchState.orgId,
+        teamIds: searchState.teamIds,
+        serviceIds: searchState.serviceIds,
+      },
+      false,
+    );
+  }
+
+  function handleScopeChange(next: {
+    org_id?: string;
+    team_ids: string[];
+    service_ids: string[];
+  }) {
+    updateRouteSearch(
+      {
+        q: searchState.q,
+        page: 1,
+        entityTypes: selectedFilters.entityTypes,
+        orgId: next.org_id ?? "",
+        teamIds: next.team_ids,
+        serviceIds: next.service_ids,
       },
       false,
     );
@@ -248,12 +282,28 @@ export function SearchPage() {
         initialValue={searchState.q}
       />
 
+      <div className="rounded-xl border border-zinc-200/80 dark:border-zinc-700/40 bg-white/40 dark:bg-zinc-900/30 p-4">
+        <div className="flex items-baseline justify-between mb-3">
+          <span className="text-[11px] font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+            Scope
+          </span>
+          <span className="text-[10px] text-zinc-400 dark:text-zinc-500">
+            leave empty to search the whole corpus
+          </span>
+        </div>
+        <ScopeSelector
+          value={{
+            org_id: searchState.orgId || undefined,
+            team_ids: searchState.teamIds,
+            service_ids: searchState.serviceIds,
+          }}
+          onChange={handleScopeChange}
+        />
+      </div>
 
       <FilterChips
         filters={{
           entityTypes: ["wiki", "issue", "merge_request", "pipeline", "readme"],
-          teams: [],
-          services: [],
         }}
         selected={selectedFilters}
         onChange={handleFilterChange}

@@ -18,16 +18,29 @@ _conversations: dict[str, list[dict]] = defaultdict(list)
 async def chat_stream(
     message: str,
     conversation_id: str | None = None,
+    *,
+    scope: dict | None = None,
 ) -> AsyncGenerator[dict, None]:
+    """Stream a grounded chat answer.
+
+    ``scope`` is a ``{org_id, team_ids, service_ids}`` dict pushed down into
+    OpenSearch so the retrieved chunks stay inside the user's selected
+    catalog scope. ``None`` means un-scoped retrieval (legacy path).
+    """
     conversation_id = conversation_id or str(uuid.uuid4())
 
     _conversations[conversation_id].append({"role": "user", "content": message})
+
+    # Only treat scope as active when ``org_id`` is present -- the wider
+    # ``HybridSearchEngine`` contract requires it as the hard filter.
+    scope_filter = scope if (scope and scope.get("org_id")) else None
 
     engine = HybridSearchEngine()
     chunks = await engine.search(
         requirement=message,
         top_k=10,
         expand=False,
+        scope_filter=scope_filter,
     )
 
     context_parts = []
