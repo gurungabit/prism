@@ -340,9 +340,13 @@ DELETE /api/sources/{source_id}
 Passing `"token": ""` in an update *clears* the stored secret. Omitting
 `token` leaves it unchanged.
 
-Deleting a source cascades to `kg_documents`, `document_registry`,
-`source_secrets`, and (best-effort) OpenSearch chunks tagged with that
-source.
+Deleting a source removes its OpenSearch chunks first, then cascades
+through Postgres (`kg_documents`, `document_registry`, `source_secrets`).
+If the OpenSearch cleanup step fails the route returns **503** and
+keeps the source row intact, so the operator (or a future durable
+retry worker) can try again once OpenSearch is healthy. Org / team /
+service deletes follow the same abort-on-OS-failure pattern for any
+descendant sources they cascade through.
 
 ### Ingest
 

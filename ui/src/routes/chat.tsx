@@ -3,6 +3,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { useChat, useConversations, useDeleteConversation } from "../hooks/useChat";
 import { useChatStore } from "../stores/chat";
 import { ConversationList } from "../components/chat/ConversationList";
+import { ConversationCommandPalette } from "../components/chat/ConversationCommandPalette";
+import { useCommandPalette } from "../hooks/useCommandPalette";
 import { ChatInput } from "../components/chat/ChatInput";
 import {
   Search,
@@ -16,6 +18,7 @@ export function ChatPage() {
   const navigate = useNavigate();
   const conversationsQuery = useConversations();
   const deleteMutation = useDeleteConversation();
+  const palette = useCommandPalette();
 
   useEffect(() => {
     useChatStore.getState().setActiveConversation(null);
@@ -54,7 +57,15 @@ export function ChatPage() {
         conversations={chat.conversations}
         activeId={null}
         onNew={handleNew}
+        onSearch={() => palette.setOpen(true)}
         onDelete={(id) => deleteMutation.mutate(id)}
+      />
+
+      <ConversationCommandPalette
+        open={palette.open}
+        onOpenChange={palette.setOpen}
+        conversations={chat.conversations}
+        onNew={handleNew}
       />
 
       <div className="flex flex-col flex-1 min-w-0 bg-[#fafaf9] dark:bg-[#131315]">

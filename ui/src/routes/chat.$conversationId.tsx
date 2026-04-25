@@ -3,6 +3,8 @@ import { useParams, useNavigate } from "@tanstack/react-router";
 import { useChat, useConversation, useConversations, useDeleteConversation } from "../hooks/useChat";
 import { useChatStore } from "../stores/chat";
 import { ConversationList } from "../components/chat/ConversationList";
+import { ConversationCommandPalette } from "../components/chat/ConversationCommandPalette";
+import { useCommandPalette } from "../hooks/useCommandPalette";
 import { ChatMessage } from "../components/chat/ChatMessage";
 import { ChatInput } from "../components/chat/ChatInput";
 import { ScopeSelector, type ScopeValue } from "../components/catalog/ScopeSelector";
@@ -38,6 +40,7 @@ export function ChatConversationPage() {
   const backendQuery = useConversation(hasLocalMessages ? null : conversationId);
 
   const setActiveConversation = useChatStore((s) => s.setActiveConversation);
+  const palette = useCommandPalette();
 
   useEffect(() => {
     if (backendQuery.data) {
@@ -89,10 +92,18 @@ export function ChatConversationPage() {
         conversations={chat.conversations}
         activeId={conversationId}
         onNew={() => navigate({ to: "/chat" })}
+        onSearch={() => palette.setOpen(true)}
         onDelete={(id) => {
           deleteMutation.mutate(id);
           if (id === conversationId) navigate({ to: "/chat" });
         }}
+      />
+
+      <ConversationCommandPalette
+        open={palette.open}
+        onOpenChange={palette.setOpen}
+        conversations={chat.conversations}
+        onNew={() => navigate({ to: "/chat" })}
       />
 
       <div className="flex flex-col flex-1 min-w-0 bg-[#fafaf9] dark:bg-[#131315]">

@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import type { Conversation } from "../../stores/chat";
-import { MessageCircle, SquarePen, Trash2 } from "lucide-react";
+import { MessageCircle, Search, SquarePen, Trash2 } from "lucide-react";
 
 interface ConversationListProps {
   conversations: Conversation[];
   activeId: string | null;
   onNew: () => void;
+  onSearch?: () => void;
   onDelete?: (id: string) => void;
 }
 
@@ -61,6 +62,7 @@ export function ConversationList({
   conversations,
   activeId,
   onNew,
+  onSearch,
   onDelete,
 }: ConversationListProps) {
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
@@ -79,13 +81,25 @@ export function ConversationList({
           <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
             Conversations
           </span>
-          <button
-            onClick={onNew}
-            aria-label="New conversation"
-            className="p-1 rounded-md text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700/30 transition-colors duration-150"
-          >
-            <SquarePen className="w-3.5 h-3.5" />
-          </button>
+          <div className="flex items-center gap-1">
+            {onSearch && (
+              <button
+                onClick={onSearch}
+                aria-label="Search conversations"
+                title="Search conversations (⌘K)"
+                className="p-1 rounded-md text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700/30 transition-colors duration-150"
+              >
+                <Search className="w-3.5 h-3.5" />
+              </button>
+            )}
+            <button
+              onClick={onNew}
+              aria-label="New conversation"
+              className="p-1 rounded-md text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700/30 transition-colors duration-150"
+            >
+              <SquarePen className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto py-1">

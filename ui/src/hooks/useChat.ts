@@ -59,6 +59,15 @@ export function useChat() {
       const decoder = new TextDecoder();
       let buffer = "";
       let currentEvent = "";
+      // Round-7 fix: when an ``error`` event arrives mid-stream (after
+      // tokens have already been delivered, e.g. provider failure
+      // partway through synthesis), we used to fall through to
+      // ``finalizeStream`` at the end of the read loop, which committed
+      // the partial token buffer as a *real* assistant turn -- so the
+      // user saw both an outage banner AND a truncated-but-plausible
+      // assistant message. Setting this flag on the error event makes
+      // us skip the final commit and clear the partial buffer.
+      let streamFailed = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -117,8 +126,8 @@ export function useChat() {
                 // as a normal token. We store the message with a
                 // ``kind: "error"`` tag and ``errorCode`` so
                 // ``ChatMessage`` renders it as a distinct retry banner
-                // rather than markdown prose -- prose styling on an
-                // outage made it look like real assistant output.
+                // rather than markdown prose.
+                streamFailed = true;
                 const code = typeof parsed.code === "string" ? parsed.code : "error";
                 const message =
                   typeof parsed.message === "string"
@@ -147,7 +156,15 @@ export function useChat() {
       }
 
       const finalId = backendConvId ?? convId;
-      store.finalizeStream(finalId);
+      // Skip ``finalizeStream`` when an error event arrived -- the
+      // error banner is already committed and the partial token buffer
+      // would otherwise be appended as a fake assistant turn. The
+      // ``finally`` block runs ``setStreaming(false)`` either way,
+      // which clears ``streamingContent`` / ``streamingCitations`` so
+      // the partial doesn't linger.
+      if (!streamFailed) {
+        store.finalizeStream(finalId);
+      }
       return backendConvId;
     } catch (err) {
       const errorContent = err instanceof Error ? err.message : "Unknown error";
