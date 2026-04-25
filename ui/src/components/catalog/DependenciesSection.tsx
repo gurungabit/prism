@@ -151,16 +151,30 @@ export function DependenciesSection({ serviceId }: Props) {
       variant: "danger",
     });
     if (!ok) return;
-    if (dep.kind === "service" && dep.to_service_id) {
-      await deleteCatalogDep.mutateAsync({
-        serviceId,
-        toServiceId: dep.to_service_id,
-      });
-    } else {
-      await deleteExternalDep.mutateAsync({
-        serviceId,
-        name: dep.to_service_name,
-      });
+    setError(null);
+    try {
+      if (dep.kind === "service" && dep.to_service_id) {
+        await deleteCatalogDep.mutateAsync({
+          serviceId,
+          toServiceId: dep.to_service_id,
+        });
+      } else {
+        await deleteExternalDep.mutateAsync({
+          serviceId,
+          name: dep.to_service_name,
+        });
+      }
+    } catch (err) {
+      // The add path already surfaces failures inline; without this the
+      // delete path would just look unresponsive on a 404 / 500 (e.g. a
+      // sibling tab already removed the same edge, or the backend is
+      // briefly unavailable). Mutation hooks already invalidate the
+      // ``service-dependencies`` cache on success; re-fetching here on
+      // failure clears any stale row out of the list too.
+      setError(
+        err instanceof Error ? err.message : "Failed to remove dependency",
+      );
+      deps.refetch();
     }
   }
 
@@ -261,6 +275,15 @@ export function DependenciesSection({ serviceId }: Props) {
             </Button>
           </div>
         </div>
+      )}
+
+      {/* Surface delete failures here too -- the form-only error renders
+          when ``showForm`` is true, but ``removeDep`` runs from the row
+          buttons while the form is closed. Without this banner a 404 / 500
+          on delete (e.g. another tab already removed the edge) would
+          look like the click was ignored. */}
+      {!showForm && error && (
+        <p className="text-[11px] text-rose-600 dark:text-rose-400">{error}</p>
       )}
 
       {deps.isLoading ? (

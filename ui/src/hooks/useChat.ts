@@ -111,6 +111,28 @@ export function useChat() {
                 typeof parsed.content === "string"
               ) {
                 store.appendStreamToken(parsed.content);
+              } else if (currentEvent === "error") {
+                // Backend now emits typed SSE error events for retrieval /
+                // LLM outages instead of streaming raw exception text as
+                // a normal token (which used to leak provider details and
+                // looked like a real assistant answer). Surface the
+                // sanitized message as a system-style turn so the UI
+                // can render it as a retryable banner.
+                const code = typeof parsed.code === "string" ? parsed.code : "error";
+                const message =
+                  typeof parsed.message === "string"
+                    ? parsed.message
+                    : "Chat is currently unavailable. Try again in a moment.";
+                const activeId =
+                  typeof parsed.conversation_id === "string"
+                    ? parsed.conversation_id
+                    : backendConvId ?? convId;
+                store.addMessage(activeId, {
+                  id: crypto.randomUUID(),
+                  role: "assistant",
+                  content: `[${code}] ${message}`,
+                  timestamp: Date.now(),
+                });
               }
             } catch {
               // skip malformed SSE data

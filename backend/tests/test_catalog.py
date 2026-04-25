@@ -224,6 +224,105 @@ def test_manual_dependency_add_remove(fresh_dsn: str):
     asyncio.run(_run())
 
 
+def test_descendant_source_enumeration_for_org_and_team_deletes(fresh_dsn: str):
+    """Catalog deletes need to enumerate descendant sources before the
+    Postgres ``ON DELETE CASCADE`` runs -- after the cascade we have no
+    handle left to drive OpenSearch cleanup, leaving chunks indexed
+    under stale ``source_id``/``org_id``/``team_id``/``service_id``
+    metadata.
+
+    This test exercises the SQL behind the enumeration: ``org``-level
+    enumeration walks org-direct + team-direct + service-attached
+    sources; ``team``-level walks team-direct + service-attached.
+    """
+    async def _run() -> None:
+        orgs = await OrgRepository.create(dsn=fresh_dsn)
+        teams = await TeamRepository.create(dsn=fresh_dsn)
+        services = await ServiceRepository.create(dsn=fresh_dsn)
+        sources = await SourceRepository.create(dsn=fresh_dsn)
+        try:
+            org_a = await orgs.insert("OrgA")
+            org_b = await orgs.insert("OrgB")
+            team_a1 = await teams.insert(org_a.id, "team-a1")
+            team_a2 = await teams.insert(org_a.id, "team-a2")
+            team_b1 = await teams.insert(org_b.id, "team-b1")
+            svc_a1 = await services.insert(team_a1.id, "svc-a1")
+            svc_a2 = await services.insert(team_a2.id, "svc-a2")
+            svc_b1 = await services.insert(team_b1.id, "svc-b1")
+
+            # Sprinkle sources at each scope axis. The enumeration
+            # should pick the right slice for each delete kind.
+            org_a_src = await sources.insert(
+                SourceCreate(
+                    scope=SourceScope.ORG, scope_id=org_a.id,
+                    kind=SourceKind.GITLAB, name="org-A-src",
+                    config={"project_path": "x/a"},
+                )
+            )
+            team_a1_src = await sources.insert(
+                SourceCreate(
+                    scope=SourceScope.TEAM, scope_id=team_a1.id,
+                    kind=SourceKind.GITLAB, name="team-A1-src",
+                    config={"project_path": "x/b"},
+                )
+            )
+            svc_a1_src = await sources.insert(
+                SourceCreate(
+                    scope=SourceScope.SERVICE, scope_id=svc_a1.id,
+                    kind=SourceKind.GITLAB, name="svc-A1-src",
+                    config={"project_path": "x/c"},
+                )
+            )
+            svc_a2_src = await sources.insert(
+                SourceCreate(
+                    scope=SourceScope.SERVICE, scope_id=svc_a2.id,
+                    kind=SourceKind.GITLAB, name="svc-A2-src",
+                    config={"project_path": "x/d"},
+                )
+            )
+            org_b_src = await sources.insert(
+                SourceCreate(
+                    scope=SourceScope.ORG, scope_id=org_b.id,
+                    kind=SourceKind.GITLAB, name="org-B-src",
+                    config={"project_path": "x/e"},
+                )
+            )
+            svc_b1_src = await sources.insert(
+                SourceCreate(
+                    scope=SourceScope.SERVICE, scope_id=svc_b1.id,
+                    kind=SourceKind.GITLAB, name="svc-B1-src",
+                    config={"project_path": "x/f"},
+                )
+            )
+
+            # Org-A enumeration: every source touching org-A's tree.
+            org_a_descendants = set(
+                await sources.list_descendant_source_ids_for_org(org_a.id)
+            )
+            assert org_a_descendants == {
+                org_a_src.id, team_a1_src.id, svc_a1_src.id, svc_a2_src.id
+            }
+            # Org B is untouched.
+            assert org_b_src.id not in org_a_descendants
+            assert svc_b1_src.id not in org_a_descendants
+
+            # Team-A1 enumeration: just team_a1's direct + nested
+            # service sources.
+            team_a1_descendants = set(
+                await sources.list_descendant_source_ids_for_team(team_a1.id)
+            )
+            assert team_a1_descendants == {team_a1_src.id, svc_a1_src.id}
+            # team-A2's service source is NOT under team-A1.
+            assert svc_a2_src.id not in team_a1_descendants
+        finally:
+            await sources.close()
+            await services.close()
+            await teams.close()
+            await orgs.close()
+
+    asyncio.run(_run())
+
+
 def test_external_dependency_crud_and_case_insensitive_dedup(fresh_dsn: str):
     """External deps round-trip through the repo, mix with catalog deps in
     listings, and dedupe case-insensitively.

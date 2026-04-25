@@ -45,6 +45,58 @@ log = get_logger("catalog_routes")
 router = APIRouter(prefix="/api")
 
 
+def _delete_opensearch_for_sources(
+    source_ids: list[UUID],
+    *,
+    scope: str,
+) -> None:
+    """Best-effort + abort-on-failure OpenSearch cleanup for catalog deletes.
+
+    The Postgres ``ON DELETE CASCADE`` chain handles every relational row
+    (teams, services, sources, ``source_secrets``, ``kg_documents``,
+    ``document_registry``, ``kg_dependencies``) when an org / team /
+    service is dropped. OpenSearch is a separate store: chunks are keyed
+    by ``source_id`` and won't be touched by the cascade. This helper
+    walks the soon-to-be-deleted source ids and runs
+    ``delete_by_source_id`` for each *before* the Postgres delete runs --
+    after the cascade we'd have no handle left to drive a retry.
+
+    Cleanup failure aborts the whole catalog delete with 503 so we don't
+    leave the deployment in the worst-of-both state where the catalog
+    row is gone but its chunks still match retrieval queries with stale
+    org/team/service metadata. The caller decides whether to retry once
+    OpenSearch is healthy again.
+
+    No-op when the list is empty -- common for a brand-new catalog node
+    that hasn't had a source attached yet.
+    """
+    if not source_ids:
+        return
+    client = get_opensearch_client()
+    failures: list[str] = []
+    for sid in source_ids:
+        try:
+            delete_by_source_id(sid, client)
+        except Exception as e:  # noqa: BLE001
+            log.error(
+                "catalog_delete_opensearch_cleanup_failed",
+                scope=scope,
+                source_id=str(sid),
+                error=str(e)[:300],
+            )
+            failures.append(str(sid))
+    if failures:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"OpenSearch cleanup failed for {len(failures)} of "
+                f"{len(source_ids)} descendant source(s); aborting "
+                f"catalog delete to avoid orphaned chunks. Retry once "
+                f"OpenSearch is healthy."
+            ),
+        )
+
+
 # ---------- request/response models ----------
 
 
@@ -171,14 +223,25 @@ async def update_org(org_id: UUID, body: OrgUpdateBody) -> Organization:
 
 @router.delete("/orgs/{org_id}")
 async def delete_org(org_id: UUID) -> dict[str, str]:
-    repo = await OrgRepository.create()
+    org_repo = await OrgRepository.create()
+    source_repo = await SourceRepository.create()
     try:
-        deleted = await repo.delete(org_id)
+        # Postgres ON DELETE CASCADE handles teams/services/sources/registry,
+        # but OpenSearch is a separate store -- chunks indexed under any of
+        # this org's descendant sources would orphan. Enumerate first, clean
+        # OS, only then drop the Postgres handle. Cleanup failure aborts
+        # the whole delete so we don't leave the catalog in a state where
+        # the only handle on the chunks is gone.
+        descendant_ids = await source_repo.list_descendant_source_ids_for_org(org_id)
+        _delete_opensearch_for_sources(descendant_ids, scope=f"org={org_id}")
+
+        deleted = await org_repo.delete(org_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Organization not found")
         return {"status": "deleted", "org_id": str(org_id)}
     finally:
-        await repo.close()
+        await source_repo.close()
+        await org_repo.close()
 
 
 # ---------- teams ----------
@@ -238,14 +301,21 @@ async def update_team(team_id: UUID, body: TeamUpdateBody) -> Team:
 
 @router.delete("/teams/{team_id}")
 async def delete_team(team_id: UUID) -> dict[str, str]:
-    repo = await TeamRepository.create()
+    team_repo = await TeamRepository.create()
+    source_repo = await SourceRepository.create()
     try:
-        deleted = await repo.delete(team_id)
+        # See ``delete_org`` for the rationale -- enumerate descendant
+        # sources, clean their OpenSearch chunks, only then cascade.
+        descendant_ids = await source_repo.list_descendant_source_ids_for_team(team_id)
+        _delete_opensearch_for_sources(descendant_ids, scope=f"team={team_id}")
+
+        deleted = await team_repo.delete(team_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Team not found")
         return {"status": "deleted", "team_id": str(team_id)}
     finally:
-        await repo.close()
+        await source_repo.close()
+        await team_repo.close()
 
 
 # ---------- services ----------
@@ -314,14 +384,22 @@ async def update_service(service_id: UUID, body: ServiceUpdateBody) -> Service:
 
 @router.delete("/services/{service_id}")
 async def delete_service(service_id: UUID) -> dict[str, str]:
-    repo = await ServiceRepository.create()
+    service_repo = await ServiceRepository.create()
+    source_repo = await SourceRepository.create()
     try:
-        deleted = await repo.delete(service_id)
+        # Enumerate sources directly attached to this service; cascade
+        # delete will tear them away with no chance to clean OS.
+        descendant_sources = await source_repo.list_sources(service_id=service_id)
+        descendant_ids = [s.id for s in descendant_sources]
+        _delete_opensearch_for_sources(descendant_ids, scope=f"service={service_id}")
+
+        deleted = await service_repo.delete(service_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Service not found")
         return {"status": "deleted", "service_id": str(service_id)}
     finally:
-        await repo.close()
+        await source_repo.close()
+        await service_repo.close()
 
 
 # ---------- service dependencies (manual) ----------
@@ -714,9 +792,13 @@ async def get_organization_graph() -> dict[str, Any]:
     """Aggregated catalog + dependency graph for the organization view.
 
     One round-trip covers every node + edge the React Flow canvas needs:
-    orgs, teams, services, service-to-service dependencies, and pending
-    (un-declared target) dependencies. Pending deps surface as orphan target
-    nodes so the user can see missing services without a separate call.
+    declared orgs, teams, services, and internal service-to-service
+    dependencies (``kind = "service"`` rows in ``kg_dependencies``).
+
+    External dependencies (``kind = "external"`` rows -- free-text
+    targets like Stripe, Auth0) are intentionally excluded: the graph
+    only renders nodes for declared catalog entities. External deps
+    are visible only on the originating service's detail page.
     """
     org_repo = await OrgRepository.create()
     team_repo = await TeamRepository.create()

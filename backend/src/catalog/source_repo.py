@@ -243,6 +243,47 @@ class SourceRepository(CatalogRepo):
             )
             return result.endswith(" 1")
 
+    async def list_descendant_source_ids_for_org(self, org_id: UUID) -> list[UUID]:
+        """Every source under an org -- direct, via a team, or via a
+        service nested under a team. Used by the org-delete handler to
+        clean OpenSearch before Postgres cascade nukes the only handle
+        we have on those chunks.
+        """
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id FROM sources
+                WHERE org_id = $1
+                   OR team_id IN (SELECT id FROM teams WHERE org_id = $1)
+                   OR service_id IN (
+                       SELECT s.id FROM services s
+                       JOIN teams t ON t.id = s.team_id
+                       WHERE t.org_id = $1
+                   )
+                """,
+                org_id,
+            )
+            return [r["id"] for r in rows]
+
+    async def list_descendant_source_ids_for_team(self, team_id: UUID) -> list[UUID]:
+        """Sources directly on a team plus sources on services under it.
+
+        Same rationale as the org variant: when a team is deleted the
+        Postgres cascade tears through services + sources but OpenSearch
+        only knows about chunks per ``source_id``, so we enumerate the
+        soon-to-be-gone source ids first.
+        """
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id FROM sources
+                WHERE team_id = $1
+                   OR service_id IN (SELECT id FROM services WHERE team_id = $1)
+                """,
+                team_id,
+            )
+            return [r["id"] for r in rows]
+
     async def try_claim_for_sync(self, source_id: UUID) -> bool:
         """Atomic compare-and-set that flips a source to ``syncing`` only if
         it isn't already in flight. Returns True if this caller owns the

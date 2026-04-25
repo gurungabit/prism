@@ -6,7 +6,7 @@ from src.agents.result import AgentResult
 from src.agents.step_callbacks import get_step_callback
 from src.models.chunk import Chunk
 from src.observability.logging import get_logger
-from src.retrieval.hybrid_search import HybridSearchEngine
+from src.retrieval.hybrid_search import HybridSearchEngine, RetrievalUnavailable
 
 log = get_logger("retrieval_agent")
 
@@ -46,11 +46,45 @@ async def retrieval_agent(state: dict[str, Any]) -> dict[str, Any]:
         }
 
     search_engine = HybridSearchEngine()
-    chunks = await search_engine.search(
-        requirement=requirement,
-        expand=True,
-        scope_filter=scope_filter,
-    )
+    try:
+        chunks = await search_engine.search(
+            requirement=requirement,
+            expand=True,
+            scope_filter=scope_filter,
+        )
+    except RetrievalUnavailable as e:
+        # Infrastructure failure -- distinct from "found no relevant
+        # docs". Falling through to the partial-results path would let
+        # downstream agents synthesize an answer with zero evidence,
+        # which is exactly the misleading-output case codex flagged.
+        # Mark the agent ``failed`` so the orchestrator surfaces the
+        # outage in the analysis status + SSE stream rather than
+        # producing a confident-but-empty report.
+        log.error(
+            "retrieval_unavailable",
+            analysis_id=analysis_id,
+            error=str(e)[:300],
+        )
+        if on_step:
+            await on_step(
+                {
+                    "agent": "retrieve",
+                    "action": "error",
+                    "detail": "Search backend unavailable; cannot complete this analysis.",
+                }
+            )
+        return {
+            "retrieved_chunks": [],
+            "retrieval_result": AgentResult(
+                status="failed",
+                error="retrieval_unavailable",
+                degradation_note=(
+                    "Search backend is currently unavailable. "
+                    "Try again in a moment."
+                ),
+            ),
+            "retrieval_rounds": retrieval_rounds + 1,
+        }
 
     if on_step:
         await on_step(
