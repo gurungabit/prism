@@ -155,3 +155,57 @@ def test_org_team_service_source_crud_roundtrip(client: TestClient):
     assert client.delete(f"/api/services/{service_id}").status_code == 200
     assert client.delete(f"/api/teams/{team_id}").status_code == 200
     assert client.delete(f"/api/orgs/{org_id}").status_code == 200
+
+
+def test_source_delete_aborts_on_opensearch_failure(client: TestClient):
+    """Round-6 fix: source delete used to log-and-ignore OpenSearch
+    cleanup failures, dropping the Postgres handle anyway and leaving
+    chunks orphaned with stale source/org/team/service metadata.
+
+    Now it abort-patterns: clean OS first, return 503 if cleanup
+    fails, and keep the source row intact for retry. The test stubs
+    ``SourceRepository.create`` + ``delete_by_source_id`` so it
+    doesn't need Postgres -- the abort behavior is purely a route-level
+    contract.
+    """
+    import uuid as _uuid
+    from src.api import catalog_routes
+
+    fake_source_id = _uuid.uuid4()
+
+    class _FakeSource:
+        id = fake_source_id
+        name = "stub-source"
+        org_id = None
+        team_id = None
+        service_id = _uuid.uuid4()
+
+    fake_repo = AsyncMock()
+    fake_repo.get = AsyncMock(return_value=_FakeSource())
+    fake_repo.delete = AsyncMock(return_value=True)
+    fake_repo.close = AsyncMock()
+
+    def _boom(*_args, **_kwargs):  # noqa: ANN001
+        raise RuntimeError("simulated OpenSearch outage")
+
+    # Round 1: OS down -> abort with 503, source.delete must NOT be
+    # called (we'd be dropping the only handle on the chunks).
+    with patch.object(
+        catalog_routes.SourceRepository,
+        "create",
+        new=AsyncMock(return_value=fake_repo),
+    ), patch.object(catalog_routes, "delete_by_source_id", side_effect=_boom):
+        resp = client.delete(f"/api/sources/{fake_source_id}")
+        assert resp.status_code == 503, resp.text
+        assert "OpenSearch cleanup failed" in resp.json()["detail"]
+    fake_repo.delete.assert_not_called()
+
+    # Round 2: OS recovers -> retry succeeds, delete actually runs.
+    with patch.object(
+        catalog_routes.SourceRepository,
+        "create",
+        new=AsyncMock(return_value=fake_repo),
+    ), patch.object(catalog_routes, "delete_by_source_id", return_value=0):
+        resp = client.delete(f"/api/sources/{fake_source_id}")
+        assert resp.status_code == 200, resp.text
+    fake_repo.delete.assert_awaited_once()

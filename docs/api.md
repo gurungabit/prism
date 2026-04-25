@@ -310,6 +310,26 @@ The optional `token` field is still accepted for per-source overrides, but
 the typical deploy uses the server-wide `PRISM_GITLAB_TOKEN` env var
 instead — the wizard no longer collects a token.
 
+#### Token policy
+
+- **Default path**: server-side `PRISM_GITLAB_TOKEN` (a service-account
+  PAT) is the canonical credential. Set it once at deploy time; every
+  source request, validate call, and autocomplete query falls back to it
+  when no per-source token is provided.
+- **Per-source override**: the `token` field on `POST /api/sources` /
+  `PATCH /api/sources/{id}` is preserved as an admin escape hatch (e.g.
+  cross-tenant pulls where the service account doesn't have access). The
+  public UI does **not** collect it; the only way to set one today is a
+  direct API call.
+- **Autocomplete routes** (`/api/gitlab/{projects,groups}/search`)
+  similarly accept a request-body `token` for the admin override flow
+  but normally use the server-side token. Tokens passed inline are
+  used for that one round-trip and never persisted.
+- **Auth gate**: PRISM is single-tenant in the current POC posture — the
+  routes above are unauthenticated. Once auth lands (see
+  AGENTS.md), per-source token submission should be admin-gated and
+  redacted in logs / API responses.
+
 ### Update / Delete
 
 ```http
@@ -385,7 +405,18 @@ Returns every turn in a thread oldest-first. Each turn carries:
 - `rolling_summary` — one-paragraph memo from a completed run, used as
   context for future follow-ups
 
-## Knowledge Graph (catalog-backed)
+## Knowledge Graph (catalog-backed) — legacy
+
+> **Compatibility surface, name-based.** These routes predate the
+> UUID-keyed catalog and look services / teams up by *name*. Service
+> names are team-scoped (and team names are org-scoped), so a name
+> like `auth-service` can resolve to different services across teams /
+> orgs in a multi-tenant catalog. They're kept for now because the
+> dependency agent and a couple of older UI views still call them, but
+> **new frontend code should use the UUID-keyed
+> `/api/orgs/{org_id}/teams`, `/api/teams/{team_id}/services`,
+> `/api/services/{service_id}`, and `/api/services/{service_id}/dependencies`
+> instead.** These will be removed once nothing internal calls them.
 
 ### List Teams
 
@@ -403,6 +434,10 @@ GET /api/graph/teams/{team_name}
 GET /api/graph/services/{service_name}
 GET /api/graph/dependencies/{service_name}?depth=2
 ```
+
+Returns the first match for the name. In ambiguous cases (same service
+name in two teams) you'll get an arbitrary winner — prefer the UUID
+routes when correctness matters.
 
 **Removed**: `GET /api/graph/conflicts`. Under the declared model a service
 belongs to exactly one team, so ownership conflicts are not possible at

@@ -1,6 +1,7 @@
 import { Children, type AnchorHTMLAttributes, type ClassAttributes, type ComponentProps, type ReactNode } from "react";
 import { Streamdown } from "streamdown";
 import { code as codePlugin } from "@streamdown/code";
+import { AlertTriangle } from "lucide-react";
 import type { ChatMessage as ChatMessageType } from "../../stores/chat";
 import { SourceCitation } from "./SourceCitation";
 
@@ -56,8 +57,42 @@ function textFromNode(node: ReactNode): string {
 
 export function ChatMessage({ message, streaming = false }: ChatMessageProps) {
   const isUser = message.role === "user";
+  const isError = message.kind === "error";
   const citations = [...(message.citations ?? [])].sort((a, b) => a.index - b.index);
   const citationMap = new Map(citations.map((citation) => [citation.index, citation]));
+
+  // Typed outage events render as an inline banner instead of running
+  // through the markdown pipeline. The previous behavior styled them
+  // as ordinary assistant prose, which made an OpenSearch / LLM outage
+  // look like a real model answer (just with a ``[code]`` prefix).
+  if (isError) {
+    return (
+      <div className="group py-3">
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50/60 px-4 py-3 dark:border-amber-700/40 dark:bg-amber-900/10"
+        >
+          <AlertTriangle
+            className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5"
+            aria-hidden="true"
+          />
+          <div className="flex-1 min-w-0">
+            <div className="text-[12px] font-medium text-amber-900 dark:text-amber-200">
+              {message.errorCode === "retrieval_unavailable"
+                ? "Search backend unavailable"
+                : message.errorCode === "llm_unavailable"
+                  ? "Chat model unavailable"
+                  : "Chat error"}
+            </div>
+            <p className="text-[12px] text-amber-800/90 dark:text-amber-300/90 mt-0.5 break-words">
+              {message.content}
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const transformedContent = sourceReferenceMarkdown(message.content);
 

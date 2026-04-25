@@ -7,8 +7,40 @@ import { ResultCard } from "../components/search/ResultCard";
 import { ScopeSelector } from "../components/catalog/ScopeSelector";
 import { EmptyState } from "../components/shared/EmptyState";
 import { Skeleton } from "../components/shared/Skeleton";
-import { Search } from "lucide-react";
+import { AlertTriangle, Search } from "lucide-react";
 import { Button } from "../components/shared/Button";
+import { ApiError } from "../lib/api";
+
+// Best-effort decode of the backend's typed-error envelope. ``/api/search``
+// returns ``503 {detail: {error: "retrieval_unavailable", message: "..."}}``
+// when OpenSearch is down. Pre-fix the UI fell through to the generic
+// "Search your knowledge base" empty state, which made an outage look
+// like a clean "no documents matched" -- exactly the empty-vs-broken
+// confusion codex flagged.
+function decodeSearchError(err: unknown): {
+  code: string;
+  message: string;
+} | null {
+  if (!(err instanceof ApiError)) return null;
+  try {
+    const parsed = JSON.parse(err.body) as {
+      detail?: { error?: string; message?: string } | string;
+    };
+    const detail = parsed.detail;
+    if (detail && typeof detail === "object") {
+      return {
+        code: typeof detail.error === "string" ? detail.error : "error",
+        message:
+          typeof detail.message === "string"
+            ? detail.message
+            : err.body || "Search request failed.",
+      };
+    }
+  } catch {
+    /* fall through */
+  }
+  return { code: "error", message: err.body || `HTTP ${err.status}` };
+}
 
 const SEARCH_PAGE_SIZE = 40;
 
@@ -328,6 +360,52 @@ export function SearchPage() {
               <Skeleton className="h-3 w-3/4" />
             </div>
           </div>
+        ) : search.isError ? (
+          // Outage banner: distinct from the "no documents matched"
+          // empty state. We lift the typed message out of the backend's
+          // 503 envelope when present (``retrieval_unavailable`` is the
+          // canonical code today); otherwise fall back to the raw error
+          // body. The retry button just re-runs the most recent
+          // mutation params -- the search page keeps the query in the
+          // URL, so this is a no-arg replay.
+          (() => {
+            const decoded = decodeSearchError(search.error);
+            const isOutage = decoded?.code === "retrieval_unavailable";
+            return (
+              <EmptyState
+                icon={
+                  <AlertTriangle
+                    className={`w-10 h-10 ${
+                      isOutage
+                        ? "text-amber-500 dark:text-amber-400"
+                        : "text-zinc-400 dark:text-zinc-500"
+                    }`}
+                  />
+                }
+                title={
+                  isOutage
+                    ? "Search backend unavailable"
+                    : "Search request failed"
+                }
+                description={
+                  decoded?.message ??
+                  "Something went wrong running this query."
+                }
+                action={
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      if (search.variables) {
+                        search.mutate(search.variables);
+                      }
+                    }}
+                  >
+                    Retry
+                  </Button>
+                }
+              />
+            );
+          })()
         ) : search.data ? (
           <>
             <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
