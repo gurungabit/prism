@@ -70,3 +70,41 @@ def test_scope_filter_builds_nullable_clauses():
 def test_scope_filter_empty_returns_no_clauses():
     assert _build_scope_clauses({}) == []
     assert _build_scope_clauses({"team_ids": [], "service_ids": None}) == []
+
+
+def test_service_only_scope_does_not_admit_other_team_docs():
+    """Regression: picking ``service_ids=[X]`` without ``team_ids`` used to
+    admit team-scoped chunks for *other* teams in the same org via the
+    nullable-OR branch. After the fix the team clause is pinned to the
+    selected services' parent teams so foreign-team team-scoped chunks
+    can't slip through.
+
+    This test exercises the clause shape only -- the parent-team
+    derivation is async (requires Postgres) and is covered by an
+    integration test elsewhere. Here we hand-build the post-derivation
+    scope and assert the resulting clauses are what OpenSearch would
+    enforce.
+    """
+    org_id = UUID("11111111-1111-1111-1111-111111111111")
+    parent_team = UUID("22222222-2222-2222-2222-222222222222")
+    service_a = UUID("44444444-4444-4444-4444-444444444444")
+
+    # Post-derivation: caller picked only service_a; parent_team was added
+    # by ``_expand_scope_with_service_parents`` before we got here.
+    clauses = _build_scope_clauses(
+        {
+            "org_id": org_id,
+            "team_ids": [parent_team],
+            "service_ids": [service_a],
+        }
+    )
+
+    team_clause = next(c for c in clauses if "bool" in c and any(
+        "terms" in child and "team_id" in child.get("terms", {})
+        for child in c["bool"].get("should", [])
+    ))
+    should = team_clause["bool"]["should"]
+    # Only the parent team is allowed; sibling-team chunks are rejected.
+    assert {"terms": {"team_id": [str(parent_team)]}} in should
+    # The IS NULL branch is still present so org-scoped chunks still match.
+    assert {"bool": {"must_not": {"exists": {"field": "team_id"}}}} in should

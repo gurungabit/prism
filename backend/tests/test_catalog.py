@@ -222,3 +222,85 @@ def test_manual_dependency_add_remove(fresh_dsn: str):
             await orgs.close()
 
     asyncio.run(_run())
+
+
+def test_registry_composite_uniqueness_and_delete_by_paths(fresh_dsn: str):
+    """Two sources can each have their own ``README.md`` (composite UNIQUE),
+    and ``delete_by_paths`` only tombstones rows for the source it was
+    given -- the other source's ``README.md`` is untouched.
+    """
+    from src.ingestion.registry import DocumentRegistry, compute_content_hash
+
+    async def _run() -> None:
+        orgs = await OrgRepository.create(dsn=fresh_dsn)
+        teams = await TeamRepository.create(dsn=fresh_dsn)
+        services = await ServiceRepository.create(dsn=fresh_dsn)
+        sources = await SourceRepository.create(dsn=fresh_dsn)
+        registry = await DocumentRegistry.create(dsn=fresh_dsn)
+        try:
+            org = await orgs.insert("Acme")
+            team = await teams.insert(org.id, "Platform")
+            svc_a = await services.insert(team.id, "service-a")
+            svc_b = await services.insert(team.id, "service-b")
+
+            src_a = await sources.insert(
+                SourceCreate(
+                    scope=SourceScope.SERVICE,
+                    scope_id=svc_a.id,
+                    kind=SourceKind.GITLAB,
+                    name="A",
+                    config={"project_path": "org/a"},
+                )
+            )
+            src_b = await sources.insert(
+                SourceCreate(
+                    scope=SourceScope.SERVICE,
+                    scope_id=svc_b.id,
+                    kind=SourceKind.GITLAB,
+                    name="B",
+                    config={"project_path": "org/b"},
+                )
+            )
+
+            # Two sources, both with ``README.md`` -- the old global UNIQUE
+            # constraint would have blown up here. The composite key
+            # ``(source_id, source_path)`` lets both rows coexist.
+            doc_a = str(uuid.uuid4())
+            doc_b = str(uuid.uuid4())
+            await registry.upsert(
+                document_id=doc_a,
+                source_platform="gitlab",
+                source_path="README.md",
+                content_hash=compute_content_hash("a"),
+                chunk_count=2,
+                source_id=src_a.id,
+            )
+            await registry.upsert(
+                document_id=doc_b,
+                source_platform="gitlab",
+                source_path="README.md",
+                content_hash=compute_content_hash("b"),
+                chunk_count=3,
+                source_id=src_b.id,
+            )
+
+            # ``delete_by_paths`` is per-source. Removing ``README.md`` for
+            # source A must leave source B's row alone.
+            removed = await registry.delete_by_paths(
+                src_a.id, ["README.md", "missing.md"]
+            )
+            assert removed == [doc_a]
+
+            still_a = await registry.get_by_path("README.md", source_id=src_a.id)
+            still_b = await registry.get_by_path("README.md", source_id=src_b.id)
+            assert still_a is None
+            assert still_b is not None
+            assert still_b["document_id"] == doc_b
+        finally:
+            await registry.close()
+            await sources.close()
+            await services.close()
+            await teams.close()
+            await orgs.close()
+
+    asyncio.run(_run())
