@@ -1,11 +1,13 @@
 import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  addExternalServiceDependency,
   addServiceDependency,
   createOrg,
   createService,
   createSource,
   createTeam,
+  deleteExternalServiceDependency,
   deleteOrg,
   deleteService,
   deleteServiceDependency,
@@ -238,6 +240,37 @@ export function useDeleteServiceDependency() {
     onSuccess: (_d, vars) => {
       qc.invalidateQueries({ queryKey: ["service-dependencies", vars.serviceId] });
       qc.invalidateQueries({ queryKey: ["organization-graph"] });
+    },
+  });
+}
+
+export function useAddExternalServiceDependency() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      serviceId,
+      name,
+      description,
+    }: {
+      serviceId: string;
+      name: string;
+      description: string;
+    }) => addExternalServiceDependency(serviceId, name, description),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["service-dependencies", vars.serviceId] });
+      // External edges don't render on the org graph (no node to draw to)
+      // so we skip invalidating that query.
+    },
+  });
+}
+
+export function useDeleteExternalServiceDependency() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ serviceId, name }: { serviceId: string; name: string }) =>
+      deleteExternalServiceDependency(serviceId, name),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["service-dependencies", vars.serviceId] });
     },
   });
 }

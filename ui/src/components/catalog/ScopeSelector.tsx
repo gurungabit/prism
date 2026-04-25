@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 
+import { Combobox } from "../shared/Combobox";
 import { Skeleton } from "../shared/Skeleton";
 import { useOrgs, useTeamsForOrg } from "../../hooks/useCatalog";
 import { listServicesForTeam } from "../../lib/api";
@@ -95,8 +96,6 @@ export function ScopeSelector({ value, onChange, compact = false }: Props) {
 
   const labelClass =
     "block text-[11px] font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500";
-  const selectClass =
-    "w-full rounded-lg border border-zinc-200 dark:border-zinc-600/50 bg-white dark:bg-[#1e1e20] text-zinc-900 dark:text-zinc-100 px-3 py-2 text-[13px] focus:outline-none focus:border-[var(--color-accent)] dark:focus:border-[var(--color-accent-dark)]";
   const wrapperClass = compact ? "space-y-2" : "space-y-3";
 
   return (
@@ -104,24 +103,21 @@ export function ScopeSelector({ value, onChange, compact = false }: Props) {
       {orgList.length > 1 && (
         <div className="space-y-1">
           <label className={labelClass}>Organization</label>
-          <select
-            value={value.org_id ?? ""}
-            onChange={(e) =>
+          <Combobox
+            value={value.org_id ?? null}
+            onChange={(orgId) =>
               onChange({
-                org_id: e.target.value || undefined,
+                org_id: orgId ?? undefined,
+                // Reset team / service narrowing when the org changes since
+                // those IDs are scoped to a specific org.
                 team_ids: [],
                 service_ids: [],
               })
             }
-            className={selectClass}
-          >
-            <option value="">Select an organization…</option>
-            {orgList.map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.name}
-              </option>
-            ))}
-          </select>
+            options={orgList.map((o) => ({ id: o.id, label: o.name }))}
+            placeholder="Search organizations…"
+            emptyMessage="No organization matches that name."
+          />
         </div>
       )}
 
