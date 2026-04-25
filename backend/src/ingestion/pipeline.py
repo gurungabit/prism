@@ -51,7 +51,7 @@ from src.ingestion.knowledge_store import KnowledgeStore
 from src.ingestion.parser import parse_document
 from src.ingestion.registry import DocumentRegistry, compute_content_hash
 from src.models.chunk import Chunk
-from src.models.document import RawDocument
+from src.models.document import DocumentRef, RawDocument
 from src.observability.logging import get_logger
 
 log = get_logger("pipeline")
@@ -236,13 +236,25 @@ class IngestionPipeline:
         stats: dict[str, Any] = {"total": 0, "indexed": 0, "skipped": 0, "failed": 0}
 
         try:
-            doc_refs = connector.list_documents()
+            # Connectors are sync httpx today (GitLab pages projects + tree
+            # walks via blocking calls); push the listing into a worker
+            # thread so the event loop keeps serving API requests during
+            # the initial fan-out on a large group.
+            doc_refs = await asyncio.to_thread(connector.list_documents)
         except Exception as e:  # noqa: BLE001
             log.error("list_documents_failed", source=source.name, error=str(e))
             raise
 
         log.info("documents_found", source=source.name, count=len(doc_refs))
         stats["total"] = len(doc_refs)
+
+        # Tombstone phase runs FIRST -- before any parse/embed/index work --
+        # so paths missing from the upstream listing get cleaned up even
+        # when every doc this run is a skip (unchanged content) or every
+        # doc fails to parse. Without this, removing a doc upstream would
+        # leave its chunks searchable until something forced a fresh
+        # re-index of the source.
+        await self._tombstone_removed_docs(source, doc_refs, stats)
 
         prepared: list[PreparedDocument] = []
 
@@ -418,38 +430,6 @@ class IngestionPipeline:
                 log.error("graph_populate_failed", path=doc.raw_doc.ref.source_path, error=str(e))
                 stats["failed"] += 1
 
-        # Tombstone phase: any registry row whose path didn't show up on this
-        # ingest's upstream listing is stale -- the doc was removed/renamed
-        # upstream and we shouldn't keep its chunks searchable.
-        upstream_paths = {ref.source_path for ref in doc_refs}
-        existing_for_source = await self.registry.get_for_source(source.id)
-        stale_paths = [
-            row["source_path"]
-            for row in existing_for_source
-            if row["source_path"] not in upstream_paths
-        ]
-        if stale_paths:
-            log.info(
-                "tombstoning_removed_docs",
-                source=source.name,
-                count=len(stale_paths),
-            )
-            removed_doc_ids = await self.registry.delete_by_paths(
-                source.id, stale_paths
-            )
-            for doc_id in removed_doc_ids:
-                try:
-                    await asyncio.to_thread(
-                        delete_by_document_id, doc_id, self.os_client
-                    )
-                except Exception as e:  # noqa: BLE001
-                    log.warning(
-                        "tombstone_opensearch_delete_failed",
-                        document_id=doc_id,
-                        error=str(e)[:200],
-                    )
-            stats["tombstoned"] = len(removed_doc_ids)
-
         log.info(
             "source_complete",
             source=source.name,
@@ -460,6 +440,50 @@ class IngestionPipeline:
             index_errors=stats.get("index_errors", 0),
         )
         return stats
+
+    async def _tombstone_removed_docs(
+        self,
+        source: Source,
+        doc_refs: list[DocumentRef],
+        stats: dict[str, Any],
+    ) -> None:
+        """Delete registry rows + OpenSearch chunks for paths missing
+        from the upstream listing.
+
+        Runs early in the ingest -- before parse/embed/index -- so an
+        ingest where every doc is unchanged (or every doc fails) still
+        cleans up orphans. Idempotent: a no-op when nothing's stale.
+        """
+        upstream_paths = {ref.source_path for ref in doc_refs}
+        existing_for_source = await self.registry.get_for_source(source.id)
+        stale_paths = [
+            row["source_path"]
+            for row in existing_for_source
+            if row["source_path"] not in upstream_paths
+        ]
+        if not stale_paths:
+            return
+
+        log.info(
+            "tombstoning_removed_docs",
+            source=source.name,
+            count=len(stale_paths),
+        )
+        removed_doc_ids = await self.registry.delete_by_paths(
+            source.id, stale_paths
+        )
+        for doc_id in removed_doc_ids:
+            try:
+                await asyncio.to_thread(
+                    delete_by_document_id, doc_id, self.os_client
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning(
+                    "tombstone_opensearch_delete_failed",
+                    document_id=doc_id,
+                    error=str(e)[:200],
+                )
+        stats["tombstoned"] = len(removed_doc_ids)
 
     def _stamp_scope_onto_chunks(self, chunks: list[Chunk], scope: SourceScope) -> None:
         for chunk in chunks:

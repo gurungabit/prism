@@ -561,6 +561,31 @@ async def _run_ingest(source_id: UUID, force: bool) -> None:
         log.info("ingest_complete", source_id=str(source_id), stats=stats)
     except Exception as e:  # noqa: BLE001
         log.error("ingest_failed", source_id=str(source_id), error=str(e))
+        # The API endpoint flipped the source to ``syncing`` via the CAS
+        # claim before kicking off this background task. Once we're inside
+        # ``ingest_source`` the pipeline owns status transitions, but if
+        # ``IngestionPipeline.create`` raised (or any code before the
+        # pipeline took ownership), the row is stuck at ``syncing`` until
+        # process restart. Flip it to ``error`` here as a safety net.
+        try:
+            from src.catalog.source_repo import SourceRepository as _SourceRepository
+            from src.catalog.models import SourceStatus as _SourceStatus
+
+            repo = await _SourceRepository.create()
+            try:
+                await repo.mark_status(
+                    source_id,
+                    _SourceStatus.ERROR,
+                    last_error=f"Ingest crashed: {str(e)[:400]}",
+                )
+            finally:
+                await repo.close()
+        except Exception as recover_err:  # noqa: BLE001
+            log.warning(
+                "ingest_recovery_failed",
+                source_id=str(source_id),
+                error=str(recover_err)[:200],
+            )
     finally:
         # Always release the pipeline pool, even when ``create`` or
         # ``ingest_source`` raised mid-construction.

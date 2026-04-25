@@ -44,6 +44,14 @@ class HybridSearchEngine:
     ) -> list[Chunk]:
         top_k = top_k or settings.retrieval_top_k
 
+        # Expand the scope before query execution: when the caller passed
+        # service_ids without explicit team_ids, derive the parent teams so
+        # team-scoped chunks for *other* teams in the same org can't slip
+        # through the nullable-OR clause. Without this, picking only
+        # ``auth-service`` would still admit, say, ``payments-team`` team
+        # docs because the service clause's ``IS NULL`` branch admits them.
+        scope_filter = await _expand_scope_with_service_parents(scope_filter)
+
         if expand:
             queries = await expand_queries(requirement)
         else:
@@ -279,6 +287,55 @@ class HybridSearchEngine:
                 log.warning("parse_hit_failed", hit_id=hit.get("_id"), error=str(e))
                 continue
         return chunks
+
+
+async def _expand_scope_with_service_parents(
+    scope_filter: dict | None,
+) -> dict | None:
+    """Add parent team_ids for any selected service_ids.
+
+    Without this expansion the OpenSearch clause builder would emit a
+    ``team_id IS NULL OR team_id IN (...)`` branch off the explicit
+    ``team_ids`` list only -- selecting just a service would still admit
+    team-scoped chunks for *other* teams in the same org because the
+    nullable branch accepts any team-scoped chunk. Pre-deriving the
+    parent teams pins the team clause to the union of (explicit teams) +
+    (services' parent teams), which is the right semantic for "I want
+    chunks reachable from these services".
+
+    Returns the scope dict (possibly mutated copy) or ``None`` when no
+    scope was supplied.
+    """
+    if not scope_filter:
+        return scope_filter
+    service_ids = _collect_ids(scope_filter.get("service_ids"))
+    if not service_ids:
+        return scope_filter
+
+    # Lazy import to avoid a circular dep at module load time.
+    from src.catalog.service_repo import ServiceRepository
+    from uuid import UUID as _UUID
+
+    repo = await ServiceRepository.create()
+    try:
+        parent_team_ids: set[str] = set()
+        for sid in service_ids:
+            try:
+                service = await repo.get(_UUID(sid))
+            except (ValueError, TypeError):
+                continue
+            if service is not None and service.team_id is not None:
+                parent_team_ids.add(str(service.team_id))
+    finally:
+        await repo.close()
+
+    if not parent_team_ids:
+        return scope_filter
+
+    expanded = dict(scope_filter)
+    existing_teams = set(_collect_ids(scope_filter.get("team_ids")))
+    expanded["team_ids"] = sorted(existing_teams | parent_team_ids)
+    return expanded
 
 
 def _build_scope_clauses(scope_filter: dict) -> list[dict]:
