@@ -537,10 +537,15 @@ async def trigger_source_ingest(
         if source is None:
             raise HTTPException(status_code=404, detail="Source not found")
 
-        # Flip to 'syncing' immediately so the UI reflects the click even
-        # before the background task starts pulling documents. The pipeline
-        # flips it again on entry, but this eliminates the UI's flicker.
-        await source_repo.mark_status(source_id, SourceStatus.SYNCING, last_error=None)
+        # Atomic compare-and-set: only one caller can flip a source to
+        # ``syncing`` at a time. Two clicks within the polling window used
+        # to enqueue two background tasks; now the second one gets a 409.
+        claimed = await source_repo.try_claim_for_sync(source_id)
+        if not claimed:
+            raise HTTPException(
+                status_code=409,
+                detail="Source is already syncing; wait for it to finish or fail",
+            )
     finally:
         await source_repo.close()
 
@@ -549,13 +554,25 @@ async def trigger_source_ingest(
 
 
 async def _run_ingest(source_id: UUID, force: bool) -> None:
+    pipeline: IngestionPipeline | None = None
     try:
         pipeline = await IngestionPipeline.create()
         stats = await pipeline.ingest_source(source_id, force=force)
         log.info("ingest_complete", source_id=str(source_id), stats=stats)
-        await pipeline.close()
     except Exception as e:  # noqa: BLE001
         log.error("ingest_failed", source_id=str(source_id), error=str(e))
+    finally:
+        # Always release the pipeline pool, even when ``create`` or
+        # ``ingest_source`` raised mid-construction.
+        if pipeline is not None:
+            try:
+                await pipeline.close()
+            except Exception as e:  # noqa: BLE001
+                log.warning(
+                    "pipeline_close_failed",
+                    source_id=str(source_id),
+                    error=str(e)[:200],
+                )
 
 
 @router.post("/sources/validate")

@@ -120,18 +120,21 @@ CREATE INDEX IF NOT EXISTS kg_dependencies_to_idx ON kg_dependencies(to_service_
 """
 
 
-# Registry gains ``source_id`` so we can cascade-delete per source and filter
-# ``/api/sources`` by declared source instead of connector name.
+# Registry uniqueness is composite on ``(source_id, source_path)`` so two
+# sources can each have their own ``README.md`` without colliding. The
+# update-vs-skip decision is content-hash driven inside the ingest loop:
+# same hash => skip, different hash => delete old chunks + re-index.
 REGISTRY_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS document_registry (
     document_id       TEXT PRIMARY KEY,
     source_platform   TEXT NOT NULL,
-    source_path       TEXT NOT NULL UNIQUE,
+    source_path       TEXT NOT NULL,
     content_hash      TEXT NOT NULL,
     last_ingested_at  TIMESTAMPTZ DEFAULT NOW(),
     chunk_count       INTEGER DEFAULT 0,
     status            TEXT DEFAULT 'pending',
-    source_id         UUID REFERENCES sources(id) ON DELETE CASCADE
+    source_id         UUID REFERENCES sources(id) ON DELETE CASCADE,
+    UNIQUE (source_id, source_path)
 );
 CREATE INDEX IF NOT EXISTS idx_registry_source_path  ON document_registry(source_path);
 CREATE INDEX IF NOT EXISTS idx_registry_status       ON document_registry(status);

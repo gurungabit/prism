@@ -243,6 +243,25 @@ class SourceRepository(CatalogRepo):
             )
             return result.endswith(" 1")
 
+    async def try_claim_for_sync(self, source_id: UUID) -> bool:
+        """Atomic compare-and-set that flips a source to ``syncing`` only if
+        it isn't already in flight. Returns True if this caller owns the
+        sync, False if another run already does. Used by the ingest API
+        endpoint to reject concurrent click-spam without enqueuing a second
+        background task.
+        """
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE sources
+                SET status = 'syncing',
+                    last_error = NULL
+                WHERE id = $1 AND status != 'syncing'
+                """,
+                source_id,
+            )
+            return result.endswith(" 1")
+
     async def mark_status(
         self,
         source_id: UUID,

@@ -93,7 +93,6 @@ def test_catalog_bootstrap_creates_tables(fresh_dsn: str):
                     "source_secrets",
                     "kg_documents",
                     "kg_dependencies",
-                    "kg_pending_dependencies",
                     "document_registry",
                 ):
                     assert expected in names, f"missing table: {expected}"
@@ -182,7 +181,14 @@ def test_source_create_enforces_one_scope(fresh_dsn: str):
     asyncio.run(_run())
 
 
-def test_pending_dependencies_reconcile(fresh_dsn: str):
+def test_manual_dependency_add_remove(fresh_dsn: str):
+    """User-managed deps replace the old auto-extraction + pending flow.
+
+    Edges are written by the service detail page through ``add_dependency``
+    and removed via ``remove_dependency``. ``query_dependencies`` walks
+    the graph for downstream consumers (the dependency agent, blast
+    radius, etc.).
+    """
     async def _run() -> None:
         orgs = await OrgRepository.create(dsn=fresh_dsn)
         teams = await TeamRepository.create(dsn=fresh_dsn)
@@ -191,21 +197,25 @@ def test_pending_dependencies_reconcile(fresh_dsn: str):
             org = await orgs.insert("Acme")
             team = await teams.insert(org.id, "Platform")
             from_service = await services.insert(team.id, "api-gateway")
+            to_service = await services.insert(team.id, "auth-service")
 
-            # Park an edge whose target doesn't exist yet.
-            await services.add_pending_dependency(
-                from_service.id,
-                "auth-service",
-                source_doc="gitlab/platform/api-gateway/README.md",
+            await services.add_dependency(
+                from_service.id, to_service.id, source_doc="manual"
             )
 
-            # Declare the missing service; reconciliation should move the edge.
-            to_service = await services.insert(team.id, "auth-service")
-            reconciled = await services.reconcile_pending_dependencies(to_service.id, "auth-service")
-            assert reconciled == 1
+            outbound = await services.list_outbound_dependencies(from_service.id)
+            assert len(outbound) == 1
+            assert outbound[0]["to_service_name"] == "auth-service"
+            assert outbound[0]["source"] == "manual"
 
-            deps = await services.query_dependencies(from_service.id)
-            assert any(d["to_service"] == "auth-service" for d in deps)
+            removed = await services.remove_dependency(from_service.id, to_service.id)
+            assert removed is True
+            outbound_after = await services.list_outbound_dependencies(from_service.id)
+            assert outbound_after == []
+
+            # Removing a non-existent edge returns False rather than raising.
+            removed_again = await services.remove_dependency(from_service.id, to_service.id)
+            assert removed_again is False
         finally:
             await services.close()
             await teams.close()
