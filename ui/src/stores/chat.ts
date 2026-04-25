@@ -15,6 +15,13 @@ export interface ChatCitation {
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
+  // ``kind`` distinguishes ordinary assistant text from typed
+  // outage events the backend now emits as SSE ``error`` events
+  // (``retrieval_unavailable``, ``llm_unavailable``). Without this
+  // tag the UI used to render the outage as plain assistant prose,
+  // making infrastructure failures look like model output.
+  kind?: "answer" | "error";
+  errorCode?: string;
   content: string;
   citations?: ChatCitation[];
   timestamp: number;

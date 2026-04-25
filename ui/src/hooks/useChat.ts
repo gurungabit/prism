@@ -112,12 +112,13 @@ export function useChat() {
               ) {
                 store.appendStreamToken(parsed.content);
               } else if (currentEvent === "error") {
-                // Backend now emits typed SSE error events for retrieval /
-                // LLM outages instead of streaming raw exception text as
-                // a normal token (which used to leak provider details and
-                // looked like a real assistant answer). Surface the
-                // sanitized message as a system-style turn so the UI
-                // can render it as a retryable banner.
+                // Backend emits typed SSE error events for retrieval /
+                // LLM outages instead of streaming raw exception text
+                // as a normal token. We store the message with a
+                // ``kind: "error"`` tag and ``errorCode`` so
+                // ``ChatMessage`` renders it as a distinct retry banner
+                // rather than markdown prose -- prose styling on an
+                // outage made it look like real assistant output.
                 const code = typeof parsed.code === "string" ? parsed.code : "error";
                 const message =
                   typeof parsed.message === "string"
@@ -130,7 +131,9 @@ export function useChat() {
                 store.addMessage(activeId, {
                   id: crypto.randomUUID(),
                   role: "assistant",
-                  content: `[${code}] ${message}`,
+                  kind: "error",
+                  errorCode: code,
+                  content: message,
                   timestamp: Date.now(),
                 });
               }

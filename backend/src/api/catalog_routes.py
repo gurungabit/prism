@@ -648,17 +648,28 @@ async def update_source(source_id: UUID, body: SourceUpdateBody) -> Source:
 async def delete_source(source_id: UUID) -> dict[str, str]:
     source_repo = await SourceRepository.create()
     try:
-        # Remove every chunk indexed under this source before deleting the
-        # row itself. ``ON DELETE CASCADE`` handles the Postgres side
-        # (kg_documents, document_registry, source_secrets), but OpenSearch
-        # is a separate store so we have to clean it up explicitly.
-        try:
-            delete_by_source_id(source_id, get_opensearch_client())
-        except Exception as e:  # noqa: BLE001
-            log.warning("opensearch_cleanup_failed", source_id=str(source_id), error=str(e)[:200])
+        # Verify the source exists before touching OpenSearch -- a 404
+        # is friendlier than spuriously running a delete-by-source query
+        # against an index for a row that was never there.
+        source = await source_repo.get(source_id)
+        if source is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+
+        # Same abort-pattern as org/team/service delete: clean OpenSearch
+        # *first*, fail loudly if it doesn't work. Pre-fix, OS cleanup
+        # failures were logged-and-ignored and the Postgres row was
+        # dropped anyway -- after which the only handle on those chunks
+        # was gone, leaving them indexed with stale source/org/team/
+        # service metadata. Returning 503 keeps the source row intact
+        # so the user (or a future durable-retry worker) can try again
+        # once OpenSearch is healthy.
+        _delete_opensearch_for_sources([source.id], scope=f"source={source_id}")
 
         deleted = await source_repo.delete(source_id)
         if not deleted:
+            # The pre-check resolved the row, so a missing-on-delete
+            # here means a concurrent delete won the race. Treat as
+            # 404 for parity with the pre-check branch.
             raise HTTPException(status_code=404, detail="Source not found")
         return {"status": "deleted", "source_id": str(source_id)}
     finally:
@@ -825,9 +836,12 @@ async def get_organization_graph() -> dict[str, Any]:
 async def search_gitlab_projects(body: GitLabProjectSearchBody) -> dict[str, Any]:
     """Paginated project search for the source-wizard dropdown.
 
-    The wizard's token isn't saved yet -- it sits in React state -- so this
-    endpoint accepts the token inline (POST body, not query string) and hands
-    it to a throwaway ``GitLabConnector`` purely for this one API round-trip.
+    Auth flow: the wizard no longer collects per-source tokens, so this
+    endpoint normally falls back to ``PRISM_GITLAB_TOKEN`` (the
+    server-side service-account token). A request-body ``token`` is
+    still accepted as an admin-only override path (see the Token Policy
+    in ``docs/api.md``); when present it's handed to a throwaway
+    ``GitLabConnector`` for this one round-trip and never persisted.
     """
     config: dict[str, Any] = {}
     if body.base_url:

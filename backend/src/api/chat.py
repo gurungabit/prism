@@ -29,7 +29,16 @@ async def chat_stream(
     """
     conversation_id = conversation_id or str(uuid.uuid4())
 
-    _conversations[conversation_id].append({"role": "user", "content": message})
+    # Stage the user message locally rather than appending immediately.
+    # The previous flow appended at the start of the turn and counted on
+    # the LLM-success branch to pair it with an assistant message. When
+    # retrieval / LLM failed, the user-only message stayed in
+    # ``_conversations`` and bled into the next request's
+    # ``history_text`` + the conversation preview -- a failed
+    # infrastructure attempt would shape future chat context. Now we
+    # only commit the pair *after* the assistant response finishes,
+    # which makes the failed-turn comments below actually true.
+    pending_user_message = {"role": "user", "content": message}
 
     # Only treat scope as active when ``org_id`` is present -- the wider
     # ``HybridSearchEngine`` contract requires it as the hard filter.
@@ -49,8 +58,8 @@ async def chat_stream(
         # refuse, both of which are worse than a clear "infra is
         # down" signal. Emit a typed SSE error event so the UI can
         # render a retryable banner instead of treating it as a
-        # normal turn. The conversation isn't appended to history
-        # (this turn never happened from the user's perspective).
+        # normal turn. The pending user message is *not* committed --
+        # this turn never happened from the user's history perspective.
         log.error("chat_retrieval_unavailable", conversation_id=conversation_id)
         yield {
             "event": "error",
@@ -90,8 +99,15 @@ async def chat_stream(
 
     context = "\n\n".join(context_parts)
 
+    # ``history`` is everything that came *before* this turn's user
+    # message (which is now staged in ``pending_user_message`` instead
+    # of being prepended to ``_conversations``). The ``[:-1]`` slice the
+    # previous code used to drop the just-appended current message is
+    # no longer needed.
     history = _conversations[conversation_id][-10:]
-    history_text = "\n".join(f"{msg['role'].upper()}: {msg['content']}" for msg in history[:-1])
+    history_text = "\n".join(
+        f"{msg['role'].upper()}: {msg['content']}" for msg in history
+    )
 
     yield {
         "event": "metadata",
@@ -148,6 +164,13 @@ RULES:
             collected += token
             yield {"event": "token", "data": json.dumps({"content": token})}
 
+        # Commit the user+assistant pair atomically *after* the stream
+        # finishes successfully. Staging the user message until here is
+        # what keeps a failed retrieval / LLM call from leaving a
+        # user-only turn behind in ``_conversations`` (which the next
+        # request would then include in ``history_text``, polluting
+        # the prompt context with infrastructure failures).
+        _conversations[conversation_id].append(pending_user_message)
         _conversations[conversation_id].append(
             {
                 "role": "assistant",
@@ -163,6 +186,8 @@ RULES:
         # distinguish errors from answers, and provider/proxy/model/auth
         # details leaked to the user. Emit a typed SSE error event with
         # a sanitized message; full diagnostics stay in server logs.
+        # ``pending_user_message`` is intentionally never committed --
+        # the failed turn doesn't shape future chat context.
         log.error(
             "chat_llm_error",
             conversation_id=conversation_id,
