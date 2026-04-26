@@ -73,7 +73,6 @@ services:
       - PRISM_OPENSEARCH_URL=http://opensearch:9200
       - PRISM_POSTGRES_URL=postgresql://prism:prismpass@postgres:5432/prism
       - PRISM_REDIS_URL=redis://redis:6379
-      - PRISM_DATA_DIR=/data
       # Filesystem jail for path-based connectors (sharepoint / excel /
       # onenote stubs). Every ``config.path`` must resolve inside this
       # subtree; ``..`` and symlink-escape are rejected. Round-10 added

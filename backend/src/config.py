@@ -12,15 +12,12 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://localhost:6379"
 
-    data_dir: str = "./data"
-
     # Filesystem jail for path-based connectors (sharepoint / excel /
     # onenote stubs). ``resolve_local_path`` constrains every
     # ``config.path`` to live inside this subtree -- including symlink
     # destinations -- and rejects requests that escape via ``..`` or a
     # symlink. Defaults to ``./data`` so a fresh deployment is jailed
-    # by default; the previous opt-in env var (``PRISM_LOCAL_SOURCE_ROOT``)
-    # still works because pydantic-settings maps the field to that name.
+    # by default.
     #
     # ``allow_unsandboxed_local_sources`` is the deliberate escape hatch
     # for development workflows that need to walk paths outside the
