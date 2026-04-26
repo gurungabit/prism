@@ -642,6 +642,32 @@ async def get_source_status(source_id: UUID) -> dict[str, Any]:
 async def update_source(source_id: UUID, body: SourceUpdateBody) -> Source:
     source_repo = await SourceRepository.create()
     try:
+        # Round-11 follow-up: PATCH used to write ``body.config``
+        # straight to Postgres without re-running the path validation
+        # that ``POST /sources`` and ``POST /sources/validate`` use,
+        # so a caller could create a source with a valid path and
+        # then PATCH it to a missing or outside-root path. Re-validate
+        # here for non-GitLab kinds against the *merged* config (the
+        # new fields layered onto the existing row) so partial
+        # updates that omit ``path`` still get checked against the
+        # currently-persisted path.
+        if body.config is not None:
+            existing = await source_repo.get(source_id)
+            if existing is None:
+                raise HTTPException(status_code=404, detail="Source not found")
+            if existing.kind != SourceKind.GITLAB:
+                merged_config: dict[str, Any] = {**existing.config, **body.config}
+                try:
+                    resolve_local_path(
+                        SourceConfig(
+                            kind=existing.kind,
+                            name=existing.name,
+                            config=merged_config,
+                        )
+                    )
+                except LocalPathRejected as e:
+                    raise HTTPException(status_code=400, detail=str(e)) from e
+
         updated = await source_repo.update(
             source_id,
             SourceUpdate(

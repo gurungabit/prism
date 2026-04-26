@@ -377,8 +377,27 @@ POST /api/sources/validate
 
 Used by the "Test connection" button in the source wizard. For GitLab it
 hits `/projects/:path` against the server-side token and returns the
-resolved project(s). For path-based connectors it checks the local path
-exists.
+resolved project(s).
+
+For path-based connectors (sharepoint / excel / onenote) the validate
++ create + patch endpoints route the path through `resolve_local_path`,
+which:
+
+- **Rejects missing or blank `path`** with `400 {"detail": "Missing 'path' ..."}`.
+  The previous behavior silently fell back to the backend's working
+  directory, so a no-config source could ingest `.env` and `backend/src`.
+- **Constrains paths to the local-source jail** (`PRISM_LOCAL_SOURCE_ROOT`,
+  default `./data`). Anything resolving outside the jail -- including
+  `..` traversal and symlinks that escape -- returns `400 {"detail": "...
+  resolves outside local_source_root ..."}`.
+- **Honors the escape hatch**
+  `PRISM_ALLOW_UNSANDBOXED_LOCAL_SOURCES=true` for development
+  workflows that need a path outside the jail. Missing-path
+  rejection still applies even with the hatch on.
+
+The same validation runs at `POST /api/sources` and `PATCH /api/sources/{id}`
+so a malformed config can't sit in Postgres waiting for ingest to
+surface the failure later.
 
 ### GitLab project + group autocomplete
 
