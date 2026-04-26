@@ -151,8 +151,20 @@ The **tombstone phase** runs *before* parsing so an ingest where every
 document is unchanged or every parse fails still cleans up deletions on
 the upstream side. The diff is per-source: for each path that exists in
 `document_registry` (filtered by `source_id`) but no longer in the upstream
-listing, the registry row is deleted and the corresponding OpenSearch
-chunks are removed via `delete_by_document_id`.
+listing, we delete the OpenSearch chunks **first**, and only drop the
+registry row when chunk cleanup succeeds.
+
+If `delete_by_document_id` fails (OpenSearch transient error, index in
+flux, etc.) the registry row is **retained** as a retry handle: the next
+ingest re-attempts cleanup using the same flow. Without that retention
+we'd lose the document handle and orphan chunks would remain searchable
+forever.
+
+A run that left orphan chunks is surfaced through `source.status`:
+the source flips to `error` and `last_error` includes
+`N stale document cleanup(s) pending retry`, so the operator can see
+that a re-run is needed even if every document otherwise indexed
+successfully.
 
 `--force` on an ingest request (UI "Force re-index" or `ingest.py --force`)
 wipes every chunk for the source first via `delete_by_source_id`, skipping
