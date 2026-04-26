@@ -74,6 +74,13 @@ services:
       - PRISM_POSTGRES_URL=postgresql://prism:prismpass@postgres:5432/prism
       - PRISM_REDIS_URL=redis://redis:6379
       - PRISM_DATA_DIR=/data
+      # Filesystem jail for path-based connectors (sharepoint / excel /
+      # onenote stubs). Every ``config.path`` must resolve inside this
+      # subtree; ``..`` and symlink-escape are rejected. Round-10 added
+      # the boundary; round-11 made it default-on so the documented
+      # compose actually enables it instead of silently leaving any
+      # readable path on the API process exposed.
+      - PRISM_LOCAL_SOURCE_ROOT=/data
     ports:
       - "8000:8000"
     depends_on:

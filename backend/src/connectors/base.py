@@ -14,12 +14,12 @@ so the pipeline can treat every connector uniformly.
 
 from __future__ import annotations
 
-import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from src.config import settings
 from src.models.document import DocumentRef, RawDocument
 
 
@@ -110,7 +110,8 @@ class ConnectorRegistry:
 def resolve_local_path(source: SourceConfig) -> Path:
     """Return the on-disk directory a path-based connector should walk.
 
-    Two rounds of hardening here, both flagged by codex:
+    Three layers of hardening, all flagged by codex across rounds 10
+    and 11:
 
     1. **Reject missing ``path``** instead of falling back to ``.``.
        The previous fallback meant a caller with API access (and we
@@ -119,18 +120,24 @@ def resolve_local_path(source: SourceConfig) -> Path:
        directory -- including ``.env``, secret stores, and
        ``backend/src``.
 
-    2. **Constrain the resolved path to ``PRISM_LOCAL_SOURCE_ROOT``**
-       when the env var is set. With it set to ``/data/prism``, any
-       ``config.path`` outside that subtree (or one that escapes via
-       ``..`` / a symlink) is rejected. With it unset, only the
-       missing-path bug is caught; the operator opts into the full
-       jail by setting the env var. We keep that opt-in because
-       local dev runs against ``./data`` from the repo and
-       requiring the env var would break the existing test fixtures.
+    2. **Constrain the resolved path to the local-source jail**
+       (``settings.local_source_root``, default ``./data``). Anything
+       outside that subtree -- via ``..`` traversal, a symlink, or a
+       literal path -- is rejected. Symlinks are resolved via
+       ``Path.resolve``, so a link inside the root pointing to
+       ``/etc`` fails the boundary check the same as a literal
+       ``/etc`` would.
 
-    Symlinks are resolved via ``Path.resolve(strict=False)``, so a
-    symlink pointing outside the root fails the boundary check just
-    like a literal path outside the root would.
+       Round 10 made this opt-in via a raw env var that nothing in
+       the documented compose / settings actually set, so the default
+       deployment was still vulnerable. Round 11 makes it
+       default-on: ``settings.local_source_root`` is read every call,
+       and the explicit escape hatch is
+       ``settings.allow_unsandboxed_local_sources`` (env:
+       ``PRISM_ALLOW_UNSANDBOXED_LOCAL_SOURCES``). The escape hatch
+       exists so dev workflows that need a one-off directory outside
+       the jail aren't permanently blocked, but it's a deliberate
+       opt-in and shouldn't be set in production.
     """
 
     raw_path = source.config.get("path")
@@ -142,15 +149,32 @@ def resolve_local_path(source: SourceConfig) -> Path:
 
     requested = Path(raw_path).expanduser().resolve()
 
-    root_env = os.environ.get("PRISM_LOCAL_SOURCE_ROOT", "").strip()
-    if root_env:
-        root = Path(root_env).expanduser().resolve()
-        try:
-            requested.relative_to(root)
-        except ValueError as e:
-            raise LocalPathRejected(
-                f"path '{raw_path}' resolves outside PRISM_LOCAL_SOURCE_ROOT "
-                f"({root}). File-based sources are confined to that subtree."
-            ) from e
+    if settings.allow_unsandboxed_local_sources:
+        # Operator deliberately opted out of the jail. Still resolve
+        # + reject missing-path above so the worst behavior (walking
+        # the CWD) is impossible even with the escape hatch.
+        return requested
+
+    root_value = settings.local_source_root.strip()
+    if not root_value:
+        # Treat empty string as "no jail" but log loudly via a clear
+        # error if anything is wrong with the config -- this should
+        # never be empty in a real deployment.
+        raise LocalPathRejected(
+            "settings.local_source_root is empty; refuse to walk an "
+            "unconstrained path. Set PRISM_LOCAL_SOURCE_ROOT or "
+            "PRISM_ALLOW_UNSANDBOXED_LOCAL_SOURCES=true."
+        )
+
+    root = Path(root_value).expanduser().resolve()
+    try:
+        requested.relative_to(root)
+    except ValueError as e:
+        raise LocalPathRejected(
+            f"path '{raw_path}' resolves outside local_source_root "
+            f"({root}). File-based sources are confined to that subtree; "
+            f"set PRISM_ALLOW_UNSANDBOXED_LOCAL_SOURCES=true to bypass "
+            f"for development."
+        ) from e
 
     return requested

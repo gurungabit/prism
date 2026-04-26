@@ -14,6 +14,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
+from src.config import settings
 from src.connectors.base import LocalPathRejected, SourceConfig, resolve_local_path
 from src.connectors.excel import ExcelConnector
 from src.connectors.gitlab import GitLabConnector, _is_knowledge_path, _next_page_url
@@ -393,7 +394,15 @@ def sharepoint_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_sharepoint_list_documents(sharepoint_dir: Path):
+def test_sharepoint_list_documents(
+    sharepoint_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # File-based connectors run through ``resolve_local_path``; round 11
+    # made the jail default-on, so a test fixture under pytest's
+    # ``tmp_path`` (outside ``./data``) needs to either become the jail
+    # or opt out via the escape hatch. Pointing the root *at* the
+    # fixture is the more honest test setup.
+    monkeypatch.setattr(settings, "local_source_root", str(sharepoint_dir))
     source = SourceConfig(
         kind="sharepoint",
         name="sp-local",
@@ -416,7 +425,10 @@ def onenote_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_onenote_list_and_fetch(onenote_dir: Path):
+def test_onenote_list_and_fetch(
+    onenote_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(settings, "local_source_root", str(onenote_dir))
     source = SourceConfig(
         kind="onenote",
         name="on-local",
@@ -433,8 +445,9 @@ def test_onenote_list_and_fetch(onenote_dir: Path):
 # ---------- Excel (file-based stub) ----------
 
 
-def test_excel_list_documents(tmp_path: Path):
+def test_excel_list_documents(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (tmp_path / "roster.csv").write_text("name,team\nalice,platform")
+    monkeypatch.setattr(settings, "local_source_root", str(tmp_path))
 
     source = SourceConfig(
         kind="excel",
@@ -447,15 +460,16 @@ def test_excel_list_documents(tmp_path: Path):
     assert refs[0].source_platform == "excel"
 
 
-# ---------- resolve_local_path: codex round-10 hardening ----------
+# ---------- resolve_local_path: rounds 10 + 11 hardening ----------
 #
-# Pre-fix, ``resolve_local_path`` fell back to ``.`` (the backend's CWD!)
-# when ``config.path`` was missing -- so an unauth API caller could
-# create a file-based source with no config and have ingest walk the
-# backend's working directory, including ``.env`` and ``backend/src``.
-# These tests pin the post-fix contract: missing path is rejected, and
-# (when ``PRISM_LOCAL_SOURCE_ROOT`` is set) anything that escapes the
-# allowlist root is also rejected.
+# Round 10 removed the ``.`` fallback and added an opt-in jail via the
+# ``PRISM_LOCAL_SOURCE_ROOT`` env var. Round 11 made the jail
+# default-on by reading ``settings.local_source_root`` (defaults to
+# ``./data``) and adding a deliberate
+# ``allow_unsandboxed_local_sources`` escape hatch. These tests pin
+# all three layers: missing path is rejected, paths outside the jail
+# (literal, ``..``, symlink-escaped) are rejected, and the escape
+# hatch works for development workflows that need it.
 
 
 def test_resolve_local_path_rejects_missing_path():
@@ -470,10 +484,14 @@ def test_resolve_local_path_rejects_blank_path():
         resolve_local_path(src)
 
 
-def test_resolve_local_path_accepts_path_inside_allowlist_root(
+def test_resolve_local_path_accepts_path_inside_jail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setenv("PRISM_LOCAL_SOURCE_ROOT", str(tmp_path))
+    # ``settings`` is a module-level singleton -- patch the attribute
+    # rather than the env var so the test sees the change without
+    # re-importing the settings module.
+    monkeypatch.setattr(settings, "local_source_root", str(tmp_path))
+    monkeypatch.setattr(settings, "allow_unsandboxed_local_sources", False)
     inner = tmp_path / "team-docs"
     inner.mkdir()
     src = SourceConfig(kind="excel", name="x", config={"path": str(inner)})
@@ -481,15 +499,16 @@ def test_resolve_local_path_accepts_path_inside_allowlist_root(
     assert resolved == inner
 
 
-def test_resolve_local_path_rejects_path_outside_allowlist_root(
+def test_resolve_local_path_rejects_path_outside_jail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    # Allowlist is one subtree; the requested path lives in a sibling.
+    # Jail is one subtree; the requested path lives in a sibling.
     allowed = tmp_path / "allowed"
     allowed.mkdir()
     sibling = tmp_path / "sibling"
     sibling.mkdir()
-    monkeypatch.setenv("PRISM_LOCAL_SOURCE_ROOT", str(allowed))
+    monkeypatch.setattr(settings, "local_source_root", str(allowed))
+    monkeypatch.setattr(settings, "allow_unsandboxed_local_sources", False)
     src = SourceConfig(kind="excel", name="x", config={"path": str(sibling)})
     with pytest.raises(LocalPathRejected, match="resolves outside"):
         resolve_local_path(src)
@@ -498,11 +517,12 @@ def test_resolve_local_path_rejects_path_outside_allowlist_root(
 def test_resolve_local_path_rejects_dotdot_escape(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    # ``..`` traversal that would escape the allowlist root must be
-    # rejected even if the literal string is "inside" the root.
+    # ``..`` traversal that would escape the jail must be rejected
+    # even if the literal string is "inside" the root.
     allowed = tmp_path / "allowed"
     allowed.mkdir()
-    monkeypatch.setenv("PRISM_LOCAL_SOURCE_ROOT", str(allowed))
+    monkeypatch.setattr(settings, "local_source_root", str(allowed))
+    monkeypatch.setattr(settings, "allow_unsandboxed_local_sources", False)
     escape = str(allowed / ".." / "secrets")
     src = SourceConfig(kind="excel", name="x", config={"path": escape})
     with pytest.raises(LocalPathRejected, match="resolves outside"):
@@ -512,8 +532,8 @@ def test_resolve_local_path_rejects_dotdot_escape(
 def test_resolve_local_path_rejects_symlink_escape(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    # A symlink inside the allowlist root pointing OUTSIDE the root
-    # is still an escape -- ``Path.resolve`` follows symlinks.
+    # A symlink inside the jail pointing OUTSIDE the jail is still an
+    # escape -- ``Path.resolve`` follows symlinks.
     allowed = tmp_path / "allowed"
     allowed.mkdir()
     secret = tmp_path / "secret"
@@ -521,19 +541,41 @@ def test_resolve_local_path_rejects_symlink_escape(
     link = allowed / "shortcut"
     link.symlink_to(secret)
 
-    monkeypatch.setenv("PRISM_LOCAL_SOURCE_ROOT", str(allowed))
+    monkeypatch.setattr(settings, "local_source_root", str(allowed))
+    monkeypatch.setattr(settings, "allow_unsandboxed_local_sources", False)
     src = SourceConfig(kind="excel", name="x", config={"path": str(link)})
     with pytest.raises(LocalPathRejected, match="resolves outside"):
         resolve_local_path(src)
 
 
-def test_resolve_local_path_no_root_skips_allowlist_check(
+def test_resolve_local_path_escape_hatch_bypasses_jail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    # With ``PRISM_LOCAL_SOURCE_ROOT`` unset (the default for local
-    # dev), only the missing-path bug is caught. Operators opt into
-    # the full jail by setting the env var. Existing test fixtures
-    # under ``data/sources/...`` keep working.
-    monkeypatch.delenv("PRISM_LOCAL_SOURCE_ROOT", raising=False)
-    src = SourceConfig(kind="excel", name="x", config={"path": str(tmp_path)})
-    assert resolve_local_path(src) == tmp_path
+    # ``allow_unsandboxed_local_sources=True`` is the deliberate
+    # escape hatch for dev workflows that need a path outside the
+    # jail. The missing-path check still applies even with the hatch
+    # on -- the worst behavior (walking CWD) is impossible regardless.
+    monkeypatch.setattr(settings, "local_source_root", str(tmp_path / "jail"))
+    monkeypatch.setattr(settings, "allow_unsandboxed_local_sources", True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    src = SourceConfig(kind="excel", name="x", config={"path": str(outside)})
+    assert resolve_local_path(src) == outside
+
+    # Missing path is still rejected even with the hatch on.
+    with pytest.raises(LocalPathRejected, match="Missing 'path'"):
+        resolve_local_path(SourceConfig(kind="excel", name="x", config={}))
+
+
+def test_resolve_local_path_blank_root_refuses_to_walk(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Misconfiguration: an empty ``local_source_root`` with the
+    # escape hatch off should fail closed rather than degrade to
+    # "walk anywhere" -- the security boundary is the default, and
+    # an empty value is a sign of operator error, not opt-out.
+    monkeypatch.setattr(settings, "local_source_root", "")
+    monkeypatch.setattr(settings, "allow_unsandboxed_local_sources", False)
+    src = SourceConfig(kind="excel", name="x", config={"path": "/tmp"})
+    with pytest.raises(LocalPathRejected, match="empty"):
+        resolve_local_path(src)

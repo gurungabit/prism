@@ -76,7 +76,9 @@ Backend settings use the `PRISM_` prefix.
 | `PRISM_OPENSEARCH_URL` | `http://localhost:9200` | OpenSearch endpoint |
 | `PRISM_POSTGRES_URL` | `postgresql://prism:prismpass@localhost:5432/prism` | PostgreSQL DSN |
 | `PRISM_REDIS_URL` | `redis://localhost:6379` | Redis endpoint |
-| `PRISM_DATA_DIR` | `./data` | data root (only used by path-based connectors) |
+| `PRISM_DATA_DIR` | `./data` | data root used by the GitLab connector for caching ingested artifacts. **Not** the jail boundary for path-based connectors -- see `PRISM_LOCAL_SOURCE_ROOT` below. |
+| `PRISM_LOCAL_SOURCE_ROOT` | `./data` | filesystem jail for path-based connectors (sharepoint / excel / onenote). Every `config.path` must resolve inside this subtree -- `..` traversal and symlink-escape are rejected. Default-on as of round 11. |
+| `PRISM_ALLOW_UNSANDBOXED_LOCAL_SOURCES` | `false` | deliberate escape hatch for development workflows that need a path outside the jail (e.g. a researcher pointing at a one-off directory). Set to `true` to bypass `PRISM_LOCAL_SOURCE_ROOT` entirely. **Production deployments should leave this off.** Missing-path rejection still applies even with the hatch on. |
 | `PRISM_GITLAB_BASE_URL` | `https://gitlab.com/api/v4` | GitLab API endpoint; override for self-hosted |
 | `PRISM_GITLAB_TOKEN` | `""` | server-wide PAT/service-account token. Used when a source row doesn't carry its own token (the wizard no longer collects per-source tokens). |
 | `PRISM_GITLAB_REQUEST_TIMEOUT_SECONDS` | `30.0` | per-request timeout for the GitLab connector |

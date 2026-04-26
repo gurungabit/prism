@@ -209,3 +209,150 @@ def test_source_delete_aborts_on_opensearch_failure(client: TestClient):
         resp = client.delete(f"/api/sources/{fake_source_id}")
         assert resp.status_code == 200, resp.text
     fake_repo.delete.assert_awaited_once()
+
+
+# ---------- file-based source path validation across routes ----------
+#
+# Round 11 made the local-source jail default-on AND extended path
+# validation to ``PATCH /api/sources/{id}`` (round 10 missed it).
+# These tests pin the route-level contract: every place that
+# accepts a path-bearing source body must run through
+# ``resolve_local_path`` and surface a typed 400 on rejection.
+# Backed by a stubbed ``SourceRepository`` so the tests don't need
+# Postgres or fight the asyncpg/TestClient pool flake.
+
+
+def test_validate_source_rejects_missing_path(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    from src.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "local_source_root", "/data")
+    monkeypatch.setattr(_settings, "allow_unsandboxed_local_sources", False)
+
+    resp = client.post(
+        "/api/sources/validate",
+        json={"kind": "sharepoint", "config": {}},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "Missing 'path'" in resp.json()["detail"]
+
+
+def test_validate_source_rejects_outside_root(
+    client: TestClient, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    from src.config import settings as _settings
+
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    sibling = tmp_path / "sibling"
+    sibling.mkdir()
+    monkeypatch.setattr(_settings, "local_source_root", str(allowed))
+    monkeypatch.setattr(_settings, "allow_unsandboxed_local_sources", False)
+
+    resp = client.post(
+        "/api/sources/validate",
+        json={"kind": "sharepoint", "config": {"path": str(sibling)}},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "resolves outside" in resp.json()["detail"]
+
+
+def test_create_source_rejects_outside_root(
+    client: TestClient, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """The create path runs the same validation as validate. Stubs
+    the repos so we exercise only the route-level checks."""
+    from src.api import catalog_routes
+    from src.config import settings as _settings
+    import uuid as _uuid
+
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setattr(_settings, "local_source_root", str(allowed))
+    monkeypatch.setattr(_settings, "allow_unsandboxed_local_sources", False)
+
+    # Stub every repo the create handler opens. Service repo's ``get``
+    # has to return something so the scope-target check passes.
+    org_repo = AsyncMock(close=AsyncMock())
+    team_repo = AsyncMock(close=AsyncMock())
+    service_repo = AsyncMock(close=AsyncMock())
+    source_repo = AsyncMock(close=AsyncMock())
+
+    class _FakeService:
+        id = _uuid.uuid4()
+
+    service_repo.get = AsyncMock(return_value=_FakeService())
+
+    with patch.object(
+        catalog_routes.OrgRepository, "create", new=AsyncMock(return_value=org_repo)
+    ), patch.object(
+        catalog_routes.TeamRepository, "create", new=AsyncMock(return_value=team_repo)
+    ), patch.object(
+        catalog_routes.ServiceRepository, "create", new=AsyncMock(return_value=service_repo)
+    ), patch.object(
+        catalog_routes.SourceRepository, "create", new=AsyncMock(return_value=source_repo)
+    ):
+        resp = client.post(
+            "/api/sources",
+            json={
+                "scope": "service",
+                "scope_id": str(_uuid.uuid4()),
+                "kind": "sharepoint",
+                "name": "outside",
+                "config": {"path": str(outside)},
+            },
+        )
+
+    assert resp.status_code == 400, resp.text
+    assert "resolves outside" in resp.json()["detail"]
+    # Validation must run *before* the insert.
+    source_repo.insert.assert_not_called()
+
+
+def test_patch_source_rejects_outside_root(
+    client: TestClient, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """Round 11: PATCH used to write ``body.config`` straight through.
+    Now it loads the existing source and re-runs path validation
+    against the merged config so a partial update can't escape the
+    jail.
+    """
+    from src.api import catalog_routes
+    from src.config import settings as _settings
+    import uuid as _uuid
+
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setattr(_settings, "local_source_root", str(allowed))
+    monkeypatch.setattr(_settings, "allow_unsandboxed_local_sources", False)
+
+    fake_source_id = _uuid.uuid4()
+
+    class _FakeSource:
+        id = fake_source_id
+        kind = "sharepoint"  # not GITLAB -- triggers the jail check
+        name = "stub"
+        config = {"path": str(allowed)}
+
+    source_repo = AsyncMock(close=AsyncMock())
+    source_repo.get = AsyncMock(return_value=_FakeSource())
+
+    with patch.object(
+        catalog_routes.SourceRepository,
+        "create",
+        new=AsyncMock(return_value=source_repo),
+    ):
+        resp = client.patch(
+            f"/api/sources/{fake_source_id}",
+            json={"config": {"path": str(outside)}},
+        )
+
+    assert resp.status_code == 400, resp.text
+    assert "resolves outside" in resp.json()["detail"]
+    # Validation must run *before* the update is persisted.
+    source_repo.update.assert_not_called()

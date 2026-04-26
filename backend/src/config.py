@@ -14,6 +14,22 @@ class Settings(BaseSettings):
 
     data_dir: str = "./data"
 
+    # Filesystem jail for path-based connectors (sharepoint / excel /
+    # onenote stubs). ``resolve_local_path`` constrains every
+    # ``config.path`` to live inside this subtree -- including symlink
+    # destinations -- and rejects requests that escape via ``..`` or a
+    # symlink. Defaults to ``./data`` so a fresh deployment is jailed
+    # by default; the previous opt-in env var (``PRISM_LOCAL_SOURCE_ROOT``)
+    # still works because pydantic-settings maps the field to that name.
+    #
+    # ``allow_unsandboxed_local_sources`` is the deliberate escape hatch
+    # for development workflows that need to walk paths outside the
+    # root (e.g. a researcher pointing at a one-off directory). Treat
+    # it as "I know what I'm doing"; production deployments leave it
+    # off so the security boundary holds.
+    local_source_root: str = "./data"
+    allow_unsandboxed_local_sources: bool = False
+
     # GitLab connector defaults. Overridable per-source via ``config.base_url``.
     # Self-hosted instances set PRISM_GITLAB_BASE_URL at deploy time.
     gitlab_base_url: str = "https://gitlab.com/api/v4"
