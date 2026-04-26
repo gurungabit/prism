@@ -447,43 +447,80 @@ class IngestionPipeline:
         doc_refs: list[DocumentRef],
         stats: dict[str, Any],
     ) -> None:
-        """Delete registry rows + OpenSearch chunks for paths missing
+        """Delete OpenSearch chunks + registry rows for paths missing
         from the upstream listing.
 
         Runs early in the ingest -- before parse/embed/index -- so an
         ingest where every doc is unchanged (or every doc fails) still
         cleans up orphans. Idempotent: a no-op when nothing's stale.
+
+        **Order matters.** Pre-fix this helper deleted registry rows
+        first, then attempted OpenSearch deletion and logged failures.
+        If OS was down during the second step we'd lose the document
+        handle while stale chunks remained searchable forever (codex
+        flagged this every round from 6 to 13). Fixed flow:
+
+        1. Enumerate stale rows from the registry (no mutations).
+        2. Delete each document's OpenSearch chunks. Track which
+           succeeded.
+        3. Drop registry rows *only* for the doc_ids whose OS cleanup
+           succeeded. Failed rows stay in the registry so the next
+           ingest re-attempts the cleanup -- the document handle is
+           the retry mechanism.
+
+        ``stats["tombstoned"]`` counts the registry rows we removed
+        this pass. ``stats["tombstone_retry_pending"]`` counts rows
+        we left for the next ingest because their OS chunks couldn't
+        be deleted.
         """
         upstream_paths = {ref.source_path for ref in doc_refs}
         existing_for_source = await self.registry.get_for_source(source.id)
-        stale_paths = [
-            row["source_path"]
+        stale_rows = [
+            row
             for row in existing_for_source
             if row["source_path"] not in upstream_paths
         ]
-        if not stale_paths:
+        if not stale_rows:
             return
 
         log.info(
             "tombstoning_removed_docs",
             source=source.name,
-            count=len(stale_paths),
+            count=len(stale_rows),
         )
-        removed_doc_ids = await self.registry.delete_by_paths(
-            source.id, stale_paths
-        )
-        for doc_id in removed_doc_ids:
+
+        # Step 1+2: delete OS chunks for each stale doc, tracking
+        # which succeeded. Failures are logged but don't drop the
+        # registry handle -- we'll retry next ingest.
+        succeeded_doc_ids: list[str] = []
+        retry_pending = 0
+        for row in stale_rows:
+            doc_id = row["document_id"]
             try:
                 await asyncio.to_thread(
                     delete_by_document_id, doc_id, self.os_client
                 )
+                succeeded_doc_ids.append(doc_id)
             except Exception as e:  # noqa: BLE001
+                retry_pending += 1
                 log.warning(
-                    "tombstone_opensearch_delete_failed",
+                    "tombstone_opensearch_delete_failed_retain_registry",
                     document_id=doc_id,
+                    source_path=row.get("source_path"),
                     error=str(e)[:200],
                 )
-        stats["tombstoned"] = len(removed_doc_ids)
+
+        # Step 3: drop only the registry rows whose OS cleanup
+        # succeeded. ``delete_by_document_ids`` is scoped to
+        # ``source.id`` as a defensive predicate.
+        removed = (
+            await self.registry.delete_by_document_ids(source.id, succeeded_doc_ids)
+            if succeeded_doc_ids
+            else []
+        )
+        stats["tombstoned"] = len(removed)
+        if retry_pending:
+            stats["tombstone_retry_pending"] = retry_pending
 
     def _stamp_scope_onto_chunks(self, chunks: list[Chunk], scope: SourceScope) -> None:
         for chunk in chunks:

@@ -27,6 +27,25 @@ class Settings(BaseSettings):
     local_source_root: str = "./data"
     allow_unsandboxed_local_sources: bool = False
 
+    # CORS allowed origins as a comma-separated string. Defaults to the
+    # local Vite dev server hosts so a fresh checkout works without
+    # extra config. Production deployments override with their actual
+    # browser origin(s) -- the previous wildcard + credentials default
+    # was unsafe even before auth lands because it sets a default that
+    # later cookie/token flows would silently inherit.
+    #
+    # ``CORSMiddleware`` accepts ``["*"]`` as a sentinel meaning "any";
+    # to keep an escape hatch for local-only experiments, set
+    # ``PRISM_CORS_ORIGINS=*``. The middleware enables credentials only
+    # when origins are *not* ``*`` -- that's the right combo per the
+    # CORS spec.
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """Parse ``cors_origins`` into a list of stripped non-empty strings."""
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
     # GitLab connector defaults. Overridable per-source via ``config.base_url``.
     # Self-hosted instances set PRISM_GITLAB_BASE_URL at deploy time.
     gitlab_base_url: str = "https://gitlab.com/api/v4"

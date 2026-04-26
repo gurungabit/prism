@@ -122,6 +122,14 @@ lsof -ti :8000,:5173 2>/dev/null | xargs kill -9 2>/dev/null || true
 sleep 1
 
 step "Starting PRISM API (port 8000)"
+# ``settings.local_source_root`` defaults to the relative ``./data``,
+# which resolves against the process cwd. Without an explicit export,
+# starting uvicorn after ``cd backend`` would jail path-based connectors
+# at ``backend/data`` -- not the top-level ``data/`` the repo tree and
+# docs point users at. Pin the jail to the repo root so the local
+# script and docs agree.
+mkdir -p "$ROOT_DIR/data"
+export PRISM_LOCAL_SOURCE_ROOT="${PRISM_LOCAL_SOURCE_ROOT:-$ROOT_DIR/data}"
 cd "$BACKEND_DIR"
 uv run uvicorn src.main:app --host 0.0.0.0 --port 8000 --log-level warning &
 API_PID=$!

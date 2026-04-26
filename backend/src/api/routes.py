@@ -363,10 +363,49 @@ async def get_trace(analysis_id: str):
 
 @router.get("/analyze/{analysis_id}/sources")
 async def get_sources(analysis_id: str):
+    """Return the ``all_sources`` array from a completed analysis.
+
+    Mirrors the persistence fallback in ``get_report``: in-memory
+    ``_analyses`` is only populated for the lifetime of a single
+    process, so after an API restart the report endpoint falls
+    through to ``AnalysisRepository``. Pre-fix, this endpoint
+    didn't, so ``GET /analyze/{id}/report`` succeeded while
+    ``GET /analyze/{id}/sources`` 404'd for the same id.
+    """
     analysis = _analyses.get(analysis_id)
-    if not analysis or not analysis.get("report"):
-        raise HTTPException(status_code=404, detail="Report not available")
-    return {"sources": analysis["report"].get("all_sources", [])}
+    if analysis:
+        if analysis["status"] == "running":
+            return JSONResponse(
+                status_code=202,
+                content={"status": "running", "message": "Analysis in progress"},
+            )
+        if analysis["status"] == "failed":
+            raise HTTPException(
+                status_code=500, detail=analysis.get("error", "Analysis failed")
+            )
+        report = analysis.get("report") or {}
+        return {"sources": report.get("all_sources", [])}
+
+    try:
+        repo = await AnalysisRepository.create()
+        row = await repo.get(analysis_id)
+        await repo.close()
+    except Exception:
+        row = None
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+
+    if row["status"] == "running":
+        return JSONResponse(
+            status_code=202,
+            content={"status": "running", "message": "Analysis in progress"},
+        )
+    if row["status"] == "failed":
+        raise HTTPException(status_code=500, detail=row.get("error", "Analysis failed"))
+
+    report = row.get("report") or {}
+    return {"sources": report.get("all_sources", [])}
 
 
 @router.post("/analyze/{analysis_id}/feedback")
