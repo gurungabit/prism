@@ -31,6 +31,15 @@ export interface Conversation {
   id: string;
   title: string;
   updatedAt: number;
+  // Lightweight last-message preview from the backend list endpoint.
+  // Hydrated alongside ``messages`` for current-session chats but
+  // available for backend-restored conversations whose full
+  // ``messages`` array hasn't been loaded yet. Used by both the
+  // sidebar preview and the command-palette substring search -- the
+  // previous version only inspected ``messages[last]``, which is
+  // empty until a conversation is opened, so backend-loaded
+  // conversations were invisible to search.
+  lastMessage?: string;
   messages: ChatMessage[];
 }
 
@@ -50,7 +59,17 @@ interface ChatState {
   setStreaming: (streaming: boolean) => void;
   deleteConversation: (id: string) => void;
   updateConversationId: (oldId: string, newId: string) => void;
-  loadFromBackend: (backendConversations: Array<{ conversation_id: string; preview: string; last_message: string }>) => void;
+  loadFromBackend: (
+    backendConversations: Array<{
+      conversation_id: string;
+      preview: string;
+      last_message: string;
+      // Wall-clock seconds (UNIX) of the most recent commit. Optional
+      // because the backend skips it for conversations without a
+      // recorded timestamp -- the hydrate path falls back to ``Date.now()``.
+      updated_at?: number | null;
+    }>,
+  ) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -133,12 +152,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
   loadFromBackend: (backendConversations) =>
     set((s) => {
       const existingIds = new Set(s.conversations.map((c) => c.id));
-      const newConversations = backendConversations
+      const newConversations: Conversation[] = backendConversations
         .filter((bc) => !existingIds.has(bc.conversation_id))
         .map((bc) => ({
           id: bc.conversation_id,
           title: bc.preview || "Conversation",
-          updatedAt: Date.now(),
+          // ``updated_at`` is UNIX seconds; the store keeps ms. Fall
+          // back to ``Date.now()`` only if the backend didn't record
+          // one (e.g. legacy state pre-rounds-of-fixes) -- previously
+          // we always used ``Date.now()``, which made the palette
+          // bucket every backend-loaded conversation as "Today".
+          updatedAt:
+            typeof bc.updated_at === "number"
+              ? bc.updated_at * 1000
+              : Date.now(),
+          lastMessage: bc.last_message || undefined,
           messages: [],
         }));
       return { conversations: [...newConversations, ...s.conversations] };
