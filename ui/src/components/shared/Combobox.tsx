@@ -289,7 +289,16 @@ export function Combobox({
                   role="option"
                   aria-selected={isSelected}
                   aria-disabled={row.option.disabled || undefined}
-                  onMouseEnter={() => {
+                  // ``onPointerMove`` rather than ``onMouseEnter``:
+                  // mouseenter fires when an element appears under a
+                  // stationary cursor (e.g. when this dropdown opens),
+                  // which used to bump the keyboard-default highlight
+                  // off whatever the user had selected. pointermove
+                  // only fires on real cursor movement, so the
+                  // keyboard state is preserved until the user
+                  // actively moves the mouse. Same fix the chat
+                  // command palette adopted in round 8.
+                  onPointerMove={() => {
                     // Skip disabled rows -- moving the highlight onto a
                     // non-selectable target would also desync from
                     // ``aria-activedescendant``.

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { MessageCircle, Plus, Search, X } from "lucide-react";
 
@@ -30,6 +30,18 @@ export function ConversationCommandPalette({
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Stable IDs so the search input can announce the highlighted
+  // command via ``aria-activedescendant`` and screen readers can
+  // announce the listbox/option semantics. The same combobox-style
+  // ARIA pattern as ``shared/Combobox.tsx`` -- focus stays on the
+  // input while arrow keys move the highlight, and assistive tech
+  // hears the active row label without focus actually leaving the
+  // input.
+  const reactId = useId();
+  const listboxId = `palette-listbox-${reactId}`;
+  const newRowId = `palette-option-${reactId}-new`;
+  const conversationOptionId = (id: string) => `palette-option-${reactId}-${id}`;
 
   // Reset query + focus the input every time the palette opens. Without
   // the reset, a previous typed query would still be in the box on
@@ -187,6 +199,20 @@ export function ConversationCommandPalette({
             ref={inputRef}
             type="text"
             placeholder="Search conversations…"
+            // ARIA combobox pattern -- focus stays on the input while
+            // arrow keys move the highlight; ``aria-activedescendant``
+            // names the highlighted row id so screen readers announce
+            // it without focus actually leaving the input. Mirrors the
+            // shared Combobox round-3 wiring.
+            role="combobox"
+            aria-expanded={true}
+            aria-controls={listboxId}
+            aria-autocomplete="list"
+            aria-activedescendant={(() => {
+              if (highlight === 0) return newRowId;
+              const target = ranked[highlight - 1];
+              return target ? conversationOptionId(target.id) : undefined;
+            })()}
             value={query}
             onChange={(e) => {
               setQuery(e.target.value);
@@ -205,12 +231,20 @@ export function ConversationCommandPalette({
           </button>
         </div>
 
-        <div className="max-h-[60vh] overflow-y-auto">
+        <div
+          id={listboxId}
+          role="listbox"
+          aria-label="Commands and conversations"
+          className="max-h-[60vh] overflow-y-auto"
+        >
           {/* New-chat affordance always at the top -- always selectable
               as command index 0 so Cmd+K can act as a "go" launcher
               even before any conversations exist. */}
           <button
             type="button"
+            id={newRowId}
+            role="option"
+            aria-selected={highlight === 0}
             // ``onPointerMove`` instead of ``onMouseEnter`` because
             // mouseenter fires when an element appears under a
             // stationary cursor (e.g. on palette open). That bumped
@@ -274,7 +308,10 @@ export function ConversationCommandPalette({
               return (
                 <button
                   key={conv.id}
+                  id={conversationOptionId(conv.id)}
                   type="button"
+                  role="option"
+                  aria-selected={isHighlighted}
                   // See the New row -- pointermove not mouseenter so
                   // a static cursor over a fresh row doesn't bump
                   // the keyboard highlight off 0.

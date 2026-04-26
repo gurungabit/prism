@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from src.agents.orchestrator import run_analysis
-from src.api.chat import _conversation_updated_at, _conversations, chat_stream
+from src.api.chat import chat_stream, conversation_store
 from src.api.streaming import create_step_callback, event_store, stream_events
 from src.catalog import ServiceRepository, TeamRepository
 from src.config import settings
@@ -641,29 +641,15 @@ async def list_conversations():
     + the preview rendered under the title.
 
     Sorted descending by ``updated_at`` so the first row is the most
-    recent. Conversations without a recorded timestamp (shouldn't
-    happen post-fix, but we don't error on legacy state) sort last.
+    recent. Sorting + projection live on the store so the route stays
+    a thin wrapper.
     """
-    convos = []
-    for conv_id, messages in _conversations.items():
-        if not messages:
-            continue
-        convos.append(
-            {
-                "conversation_id": conv_id,
-                "message_count": len(messages),
-                "last_message": messages[-1]["content"][:100],
-                "preview": messages[0]["content"][:100],
-                "updated_at": _conversation_updated_at.get(conv_id),
-            }
-        )
-    convos.sort(key=lambda c: c.get("updated_at") or 0.0, reverse=True)
-    return {"conversations": convos}
+    return {"conversations": conversation_store.list()}
 
 
 @router.get("/chat/{conversation_id}")
 async def get_conversation(conversation_id: str):
-    messages = _conversations.get(conversation_id)
+    messages = conversation_store.get(conversation_id)
     if messages is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"conversation_id": conversation_id, "messages": messages}
@@ -747,11 +733,10 @@ async def get_chat_source_preview(
 
 @router.delete("/chat/{conversation_id}")
 async def delete_conversation(conversation_id: str):
-    if conversation_id in _conversations:
-        del _conversations[conversation_id]
-        # Drop the matching ``updated_at`` so a stale timestamp can't
-        # outlive the conversation it described.
-        _conversation_updated_at.pop(conversation_id, None)
+    # ``conversation_store.delete`` removes both the message list and
+    # the ``updated_at`` stamp atomically, so the route doesn't need
+    # to remember to do the second drop.
+    if conversation_store.delete(conversation_id):
         return {"status": "deleted", "conversation_id": conversation_id}
     raise HTTPException(status_code=404, detail="Conversation not found")
 

@@ -22,14 +22,13 @@ from src.retrieval.hybrid_search import RetrievalUnavailable
 
 @pytest.fixture(autouse=True)
 def _clean_conversations():
-    """Reset the in-memory conversations + per-conversation timestamp
-    dicts between tests so state doesn't bleed across cases.
+    """Reset the conversation store between tests so state doesn't
+    bleed across cases. ``conversation_store.clear`` wipes both
+    halves (messages + ``updated_at``) atomically.
     """
-    chat_module._conversations.clear()
-    chat_module._conversation_updated_at.clear()
+    chat_module.conversation_store.clear()
     yield
-    chat_module._conversations.clear()
-    chat_module._conversation_updated_at.clear()
+    chat_module.conversation_store.clear()
 
 
 async def _drain(gen):
@@ -76,10 +75,12 @@ def test_retrieval_failure_does_not_pollute_conversation_history():
 
     # And critically: the user message was *not* committed to history.
     # No other request can pull this orphan into its prompt context.
-    assert chat_module._conversations.get(conv_id, []) == []
-    # Failed turn is also absent from the timestamp dict, so the list
-    # endpoint won't surface a phantom "Today" conversation.
-    assert conv_id not in chat_module._conversation_updated_at
+    # ``store.get`` returns None when the conversation was never
+    # persisted; the list endpoint also won't surface a phantom
+    # "Today" conversation since updated_at lives on the same store.
+    assert chat_module.conversation_store.get(conv_id) is None
+    listed = [c["conversation_id"] for c in chat_module.conversation_store.list()]
+    assert conv_id not in listed
 
 
 def test_llm_failure_does_not_pollute_conversation_history():
@@ -122,8 +123,9 @@ def test_llm_failure_does_not_pollute_conversation_history():
     assert "simulated upstream LLM 500" not in payload["message"]
 
     # User message stays out of history -- this turn never happened.
-    assert chat_module._conversations.get(conv_id, []) == []
-    assert conv_id not in chat_module._conversation_updated_at
+    assert chat_module.conversation_store.get(conv_id) is None
+    listed = [c["conversation_id"] for c in chat_module.conversation_store.list()]
+    assert conv_id not in listed
 
 
 def test_successful_turn_commits_user_and_assistant_pair():
@@ -169,15 +171,19 @@ def test_successful_turn_commits_user_and_assistant_pair():
 
     asyncio.run(_run())
 
-    history = chat_module._conversations.get(conv_id, [])
+    history = chat_module.conversation_store.get(conv_id) or []
     assert len(history) == 2
     assert history[0]["role"] == "user"
     assert history[0]["content"] == "greet me"
     assert history[1]["role"] == "assistant"
     assert history[1]["content"] == "hello world"
-    # ``_touch_conversation`` ran alongside the commit so the list
-    # endpoint can sort by recency.
-    assert conv_id in chat_module._conversation_updated_at
+    # ``commit_pair`` stamps ``updated_at`` atomically with the
+    # message append, so the list endpoint surfaces this row with
+    # a real timestamp (not a placeholder).
+    listed = chat_module.conversation_store.list()
+    row = next((r for r in listed if r["conversation_id"] == conv_id), None)
+    assert row is not None
+    assert row["updated_at"] is not None
 
 
 def _make_token_chunk(text: str):
