@@ -615,6 +615,14 @@ export interface ChatConversation {
   message_count: number;
   last_message: string;
   preview: string;
+  // UNIX seconds (wall-clock) of the most recent commit. Round-8
+  // added this on the backend so the command palette can bucket by
+  // recency instead of stamping every backend-loaded conversation
+  // with the page-load timestamp; the TS contract was missed at the
+  // time, so clients couldn't see the field even though
+  // ``loadFromBackend`` already consumes it. ``null`` for legacy
+  // rows that pre-dated the timestamp.
+  updated_at?: number | null;
 }
 
 export interface ChatMessageData {

@@ -14,12 +14,23 @@ so the pipeline can treat every connector uniformly.
 
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from src.models.document import DocumentRef, RawDocument
+
+
+class LocalPathRejected(ValueError):
+    """Raised when a file-based connector's path is unsafe to walk.
+
+    Distinct from a generic ``ValueError`` so route + pipeline error
+    handling can map it to a clear 400 / source-error state instead of
+    a 500. Routes catch this when validating or creating sources;
+    ingest catches it at connector construction.
+    """
 
 
 @dataclass
@@ -99,15 +110,47 @@ class ConnectorRegistry:
 def resolve_local_path(source: SourceConfig) -> Path:
     """Return the on-disk directory a path-based connector should walk.
 
-    Looks at ``source.config['path']`` first, falling back to the legacy
-    ``data/sources/{kind}`` convention if the source has no explicit path.
+    Two rounds of hardening here, both flagged by codex:
+
+    1. **Reject missing ``path``** instead of falling back to ``.``.
+       The previous fallback meant a caller with API access (and we
+       have no auth yet) could create a path-based source with no
+       config at all and have ingest walk the backend's working
+       directory -- including ``.env``, secret stores, and
+       ``backend/src``.
+
+    2. **Constrain the resolved path to ``PRISM_LOCAL_SOURCE_ROOT``**
+       when the env var is set. With it set to ``/data/prism``, any
+       ``config.path`` outside that subtree (or one that escapes via
+       ``..`` / a symlink) is rejected. With it unset, only the
+       missing-path bug is caught; the operator opts into the full
+       jail by setting the env var. We keep that opt-in because
+       local dev runs against ``./data`` from the repo and
+       requiring the env var would break the existing test fixtures.
+
+    Symlinks are resolved via ``Path.resolve(strict=False)``, so a
+    symlink pointing outside the root fails the boundary check just
+    like a literal path outside the root would.
     """
 
     raw_path = source.config.get("path")
-    if raw_path:
-        return Path(raw_path).expanduser().resolve()
+    if not raw_path or not isinstance(raw_path, str) or not raw_path.strip():
+        raise LocalPathRejected(
+            f"Missing 'path' in {source.kind} source config. "
+            "File-based connectors require an explicit path."
+        )
 
-    # Fallback for dev-time sources that were declared without a path. Keeps
-    # the file-based test fixtures working without forcing every SourceConfig
-    # to carry a path.
-    return Path(source.config.get("base_dir", ".")).expanduser().resolve()
+    requested = Path(raw_path).expanduser().resolve()
+
+    root_env = os.environ.get("PRISM_LOCAL_SOURCE_ROOT", "").strip()
+    if root_env:
+        root = Path(root_env).expanduser().resolve()
+        try:
+            requested.relative_to(root)
+        except ValueError as e:
+            raise LocalPathRejected(
+                f"path '{raw_path}' resolves outside PRISM_LOCAL_SOURCE_ROOT "
+                f"({root}). File-based sources are confined to that subtree."
+            ) from e
+
+    return requested
