@@ -84,6 +84,32 @@ const CHUNK_GROUPS: Array<{
       "seroval",
       "seroval-plugins",
       "@ungap/structured-clone",
+      // Pull shiki + @streamdown/code into the markdown chunk so the
+      // circular ``misc-vendor -> markdown -> misc-vendor`` warning
+      // resolves: previously ``streamdown`` lived here but its
+      // ``@streamdown/code`` peer (which depends on shiki) landed in
+      // misc-vendor, creating the back-edge. Code highlighting is
+      // only used by the markdown renderer in chat/analyze, so it
+      // belongs in the same chunk as the markdown pipeline.
+      "@streamdown/code",
+      "shiki",
+      /^@shikijs/,
+    ],
+  },
+  {
+    // Graph / layout libraries used by /organization and the
+    // blast-radius view in /analyze. Pulling these out of misc-vendor
+    // is the single biggest payload win after shiki -- ``@xyflow/react``
+    // alone is ~4.6 MB on disk and ``@dagrejs/dagre`` is ~2 MB.
+    name: "graph",
+    matches: [
+      "@xyflow/react",
+      "@dagrejs/dagre",
+      "dagre",
+      // d3 sub-packages xyflow uses for force layout. They're tiny
+      // individually but they cluster -- group them with the
+      // consumer.
+      /^d3-/,
     ],
   },
 ];
