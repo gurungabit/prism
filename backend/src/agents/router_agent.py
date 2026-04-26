@@ -129,14 +129,13 @@ async def router_agent(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _format_chunks(chunks: list[Chunk]) -> str:
-    parts = []
-    for i, chunk in enumerate(chunks, 1):
-        parts.append(
-            f"[Doc {i}] Source: {chunk.metadata.source_path}\n"
-            f"Title: {chunk.metadata.document_title}\n"
-            f"Section: {chunk.metadata.section_heading}\n"
-            f"Type: {chunk.metadata.doc_type}\n"
-            f"Modified: {chunk.metadata.last_modified}\n"
-            f"Content:\n{chunk.content[:1000]}\n"
-        )
-    return "\n---\n".join(parts)
+    """Wrap retrieved chunks in untrusted-content fences.
+
+    Delegates to ``prompts.format_chunks_for_prompt`` so every agent
+    + chat use the same delimiter convention. The delimiters
+    materially matter: see ``UNTRUSTED_DOCS_RULE`` for the system-
+    prompt rule that pairs with them.
+    """
+    from src.agents.prompts import format_chunks_for_prompt
+
+    return format_chunks_for_prompt(chunks)

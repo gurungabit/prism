@@ -137,7 +137,8 @@ def _extract_service_names(routing_data: AgentResult | None, chunks: list[Chunk]
 
 
 def _format_chunks(chunks: list[Chunk]) -> str:
-    parts = []
-    for i, chunk in enumerate(chunks, 1):
-        parts.append(f"[Doc {i}] {chunk.metadata.source_path}\nContent:\n{chunk.content[:800]}\n")
-    return "\n---\n".join(parts)
+    """Untrusted-content fences around each retrieved chunk; see
+    ``prompts.format_chunks_for_prompt`` for the full rationale."""
+    from src.agents.prompts import format_chunks_for_prompt
+
+    return format_chunks_for_prompt(chunks, max_chars_per_chunk=800)

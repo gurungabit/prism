@@ -142,16 +142,11 @@ def _detect_stale_sources(chunks: list[Chunk]) -> list[str]:
 
 
 def _format_chunks(chunks: list[Chunk]) -> str:
-    parts = []
-    for i, chunk in enumerate(chunks, 1):
-        last_modified = _normalize_datetime(chunk.metadata.last_modified)
-        modified = last_modified.strftime("%Y-%m-%d") if last_modified else "unknown"
-        parts.append(
-            f"[Doc {i}] {chunk.metadata.source_path} (modified: {modified})\n"
-            f"Type: {chunk.metadata.doc_type}\n"
-            f"Content:\n{chunk.content[:800]}\n"
-        )
-    return "\n---\n".join(parts)
+    """Untrusted-content fences around each retrieved chunk; see
+    ``prompts.format_chunks_for_prompt`` for the full rationale."""
+    from src.agents.prompts import format_chunks_for_prompt
+
+    return format_chunks_for_prompt(chunks, max_chars_per_chunk=800)
 
 
 def _normalize_datetime(value: datetime | None) -> datetime | None:

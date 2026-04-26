@@ -168,20 +168,35 @@ class IngestionPipeline:
         finally:
             await connector.aclose()
 
-        # Per-document parse / index failures, or any OpenSearch bulk error,
-        # used to be silently masked because the source flipped to ``ready``
-        # regardless. Surface them: status -> error, last_error carries a
-        # short diagnostic the UI can show. The source still keeps whatever
-        # chunks did land (we don't roll back partial success), but the user
-        # knows to retry.
+        # Per-document parse / index failures, OpenSearch bulk errors,
+        # and tombstone OS-cleanup failures used to be silently masked
+        # because the source flipped to ``ready`` regardless. Surface
+        # them: status -> error, last_error carries a short diagnostic
+        # the UI can show. The source keeps whatever chunks did land
+        # (we don't roll back partial success), but the user knows to
+        # retry.
+        #
+        # ``tombstone_retry_pending`` is the round-14 addition. After
+        # round 13 the tombstone path retains registry rows whose OS
+        # cleanup failed -- the next ingest re-attempts them -- but
+        # nothing surfaced the pending retry to the operator, so a
+        # source could finish "ready" while orphan chunks still
+        # answered queries. Treat it like the other partial-failure
+        # signals: bump status to error and tell the UI how many
+        # cleanups are queued.
         failed_count = int(stats.get("failed", 0) or 0)
         index_errors = int(stats.get("index_errors", 0) or 0)
-        if failed_count or index_errors:
+        tombstone_pending = int(stats.get("tombstone_retry_pending", 0) or 0)
+        if failed_count or index_errors or tombstone_pending:
             parts: list[str] = []
             if failed_count:
                 parts.append(f"{failed_count} document(s) failed to parse/index")
             if index_errors:
                 parts.append(f"{index_errors} OpenSearch bulk error(s)")
+            if tombstone_pending:
+                parts.append(
+                    f"{tombstone_pending} stale document cleanup(s) pending retry"
+                )
             first_err = stats.get("index_first_error")
             if first_err:
                 parts.append(f"first: {first_err}")
@@ -437,6 +452,7 @@ class IngestionPipeline:
             skipped=stats["skipped"],
             failed=stats["failed"],
             tombstoned=stats.get("tombstoned", 0),
+            tombstone_retry_pending=stats.get("tombstone_retry_pending", 0),
             index_errors=stats.get("index_errors", 0),
         )
         return stats
