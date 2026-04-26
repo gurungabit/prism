@@ -462,6 +462,36 @@ def test_registry_composite_uniqueness_and_delete_by_paths(fresh_dsn: str):
             assert still_a is None
             assert still_b is not None
             assert still_b["document_id"] == doc_b
+
+            # ``delete_by_document_ids`` is the round-13 helper used by
+            # the tombstone path: drops rows by document_id, scoped to
+            # ``source_id`` so a stray doc_id from a different source
+            # can't accidentally clobber rows it doesn't own.
+            doc_b2 = str(uuid.uuid4())
+            await registry.upsert(
+                document_id=doc_b2,
+                source_platform="gitlab",
+                source_path="OTHER.md",
+                content_hash=compute_content_hash("b2"),
+                chunk_count=1,
+                source_id=src_b.id,
+            )
+            # Pass src_a.id with a doc_id that lives under src_b -- it
+            # must NOT be deleted because the predicate is ``source_id
+            # AND document_id``.
+            removed_cross = await registry.delete_by_document_ids(
+                src_a.id, [doc_b2]
+            )
+            assert removed_cross == []
+            assert (
+                await registry.get_by_path("OTHER.md", source_id=src_b.id)
+            ) is not None
+
+            # Right-source delete works.
+            removed_correct = await registry.delete_by_document_ids(
+                src_b.id, [doc_b2]
+            )
+            assert removed_correct == [doc_b2]
         finally:
             await registry.close()
             await sources.close()

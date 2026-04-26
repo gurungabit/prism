@@ -159,6 +159,10 @@ class DocumentRegistry:
 
         Returns the ``document_id``s that were removed so the caller can
         clean up the matching OpenSearch chunks.
+
+        Prefer ``delete_by_document_ids`` from the tombstone path -- it
+        lets the pipeline delete OpenSearch chunks *first* and only drop
+        the registry handle for documents whose chunk cleanup succeeded.
         """
         if not paths:
             return []
@@ -171,6 +175,36 @@ class DocumentRegistry:
                 """,
                 source_id,
                 paths,
+            )
+            return [r["document_id"] for r in rows]
+
+    async def delete_by_document_ids(
+        self, source_id: UUID, document_ids: list[str]
+    ) -> list[str]:
+        """Drop registry rows by ``document_id``, scoped to ``source_id``.
+
+        Used by the tombstone path: the pipeline enumerates stale rows,
+        deletes their OpenSearch chunks first, and only then asks the
+        registry to drop the rows whose chunks actually succeeded.
+        Failed rows stay in the registry so the next ingest re-tries
+        them -- without this we'd lose the document handle and orphan
+        chunks would remain searchable forever.
+
+        ``source_id`` is part of the predicate as a defensive scope
+        check: a caller passing doc_ids from a different source can't
+        accidentally clobber rows they don't own.
+        """
+        if not document_ids:
+            return []
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                DELETE FROM document_registry
+                WHERE source_id = $1 AND document_id = ANY($2::text[])
+                RETURNING document_id
+                """,
+                source_id,
+                document_ids,
             )
             return [r["document_id"] for r in rows]
 
