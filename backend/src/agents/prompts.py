@@ -7,11 +7,27 @@ if TYPE_CHECKING:
 
 
 # Compiled fence-marker pattern. Catches every literal that could close
-# our fence early: ``<<<END_DOC>>>``, ``<<<DOC ...>>>``, and the bare
-# ``<<<DOC`` prefix (which is enough for an attacker to introduce
-# ambiguous parsing). Match is case-insensitive on the keyword so a
-# payload using ``<<<End_Doc>>>`` doesn't slip through.
-_FENCE_PATTERN = re.compile(r"<<<\s*(?:END_DOC>>>|DOC\b[^>]*>>>|DOC\b)", re.IGNORECASE)
+# our fence early:
+#
+#   - ``<<<END_DOC>>>`` and whitespace variants (``<<<END_DOC >>>``,
+#     ``<<< END_DOC >>>``, etc). The ``\s*`` slots after the opening
+#     ``<<<`` and before the terminal ``>>>`` are why round 16 widened
+#     this regex past round 15's exact-only match.
+#   - ``<<<DOC ...>>>`` (any attribute body, with the same whitespace
+#     tolerance around the brackets) -- forges a fake fresh document.
+#   - the bare ``<<<DOC`` prefix -- enough to introduce ambiguous
+#     parsing even without a paired close.
+#
+# Case-insensitive so payloads using ``<<<End_Doc>>>`` don't slip
+# through. We deliberately don't try to canonicalize unicode-similar
+# bracket characters or zero-width separators -- those are a different
+# class of attack and the placeholder substitution this regex drives
+# is already eye-catching enough that an operator scanning prompt
+# logs would notice them.
+_FENCE_PATTERN = re.compile(
+    r"<<<\s*(?:END_DOC\s*>>>|DOC\b[^>]*\s*>>>|DOC\b)",
+    re.IGNORECASE,
+)
 
 
 def _neutralize_fence_markers(text: str) -> str:
