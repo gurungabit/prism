@@ -14,7 +14,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from src.connectors.base import SourceConfig
+from src.connectors.base import LocalPathRejected, SourceConfig, resolve_local_path
 from src.connectors.excel import ExcelConnector
 from src.connectors.gitlab import GitLabConnector, _is_knowledge_path, _next_page_url
 from src.connectors.onenote import OneNoteConnector
@@ -445,3 +445,95 @@ def test_excel_list_documents(tmp_path: Path):
     refs = connector.list_documents()
     assert len(refs) == 1
     assert refs[0].source_platform == "excel"
+
+
+# ---------- resolve_local_path: codex round-10 hardening ----------
+#
+# Pre-fix, ``resolve_local_path`` fell back to ``.`` (the backend's CWD!)
+# when ``config.path`` was missing -- so an unauth API caller could
+# create a file-based source with no config and have ingest walk the
+# backend's working directory, including ``.env`` and ``backend/src``.
+# These tests pin the post-fix contract: missing path is rejected, and
+# (when ``PRISM_LOCAL_SOURCE_ROOT`` is set) anything that escapes the
+# allowlist root is also rejected.
+
+
+def test_resolve_local_path_rejects_missing_path():
+    src = SourceConfig(kind="excel", name="x", config={})
+    with pytest.raises(LocalPathRejected, match="Missing 'path'"):
+        resolve_local_path(src)
+
+
+def test_resolve_local_path_rejects_blank_path():
+    src = SourceConfig(kind="excel", name="x", config={"path": "   "})
+    with pytest.raises(LocalPathRejected, match="Missing 'path'"):
+        resolve_local_path(src)
+
+
+def test_resolve_local_path_accepts_path_inside_allowlist_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("PRISM_LOCAL_SOURCE_ROOT", str(tmp_path))
+    inner = tmp_path / "team-docs"
+    inner.mkdir()
+    src = SourceConfig(kind="excel", name="x", config={"path": str(inner)})
+    resolved = resolve_local_path(src)
+    assert resolved == inner
+
+
+def test_resolve_local_path_rejects_path_outside_allowlist_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Allowlist is one subtree; the requested path lives in a sibling.
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    sibling = tmp_path / "sibling"
+    sibling.mkdir()
+    monkeypatch.setenv("PRISM_LOCAL_SOURCE_ROOT", str(allowed))
+    src = SourceConfig(kind="excel", name="x", config={"path": str(sibling)})
+    with pytest.raises(LocalPathRejected, match="resolves outside"):
+        resolve_local_path(src)
+
+
+def test_resolve_local_path_rejects_dotdot_escape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # ``..`` traversal that would escape the allowlist root must be
+    # rejected even if the literal string is "inside" the root.
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    monkeypatch.setenv("PRISM_LOCAL_SOURCE_ROOT", str(allowed))
+    escape = str(allowed / ".." / "secrets")
+    src = SourceConfig(kind="excel", name="x", config={"path": escape})
+    with pytest.raises(LocalPathRejected, match="resolves outside"):
+        resolve_local_path(src)
+
+
+def test_resolve_local_path_rejects_symlink_escape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # A symlink inside the allowlist root pointing OUTSIDE the root
+    # is still an escape -- ``Path.resolve`` follows symlinks.
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    link = allowed / "shortcut"
+    link.symlink_to(secret)
+
+    monkeypatch.setenv("PRISM_LOCAL_SOURCE_ROOT", str(allowed))
+    src = SourceConfig(kind="excel", name="x", config={"path": str(link)})
+    with pytest.raises(LocalPathRejected, match="resolves outside"):
+        resolve_local_path(src)
+
+
+def test_resolve_local_path_no_root_skips_allowlist_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # With ``PRISM_LOCAL_SOURCE_ROOT`` unset (the default for local
+    # dev), only the missing-path bug is caught. Operators opt into
+    # the full jail by setting the env var. Existing test fixtures
+    # under ``data/sources/...`` keep working.
+    monkeypatch.delenv("PRISM_LOCAL_SOURCE_ROOT", raising=False)
+    src = SourceConfig(kind="excel", name="x", config={"path": str(tmp_path)})
+    assert resolve_local_path(src) == tmp_path

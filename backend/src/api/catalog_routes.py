@@ -34,7 +34,7 @@ from src.catalog.models import (
     SourceUpdate,
     Team,
 )
-from src.connectors.base import SourceConfig
+from src.connectors.base import LocalPathRejected, SourceConfig, resolve_local_path
 from src.connectors.gitlab import GitLabAPIError, GitLabConnector
 from src.ingestion.indexer import delete_by_source_id, get_opensearch_client
 from src.ingestion.pipeline import IngestionPipeline
@@ -546,6 +546,19 @@ async def create_source(body: SourceCreateBody) -> Source:
             if await service_repo.get(body.scope_id) is None:
                 raise HTTPException(status_code=404, detail="Service not found for source scope")
 
+        # File-based connectors: validate the path now so a malformed
+        # source can't sit in Postgres waiting for ingest to surface
+        # the failure. ``resolve_local_path`` rejects missing paths
+        # and (when ``PRISM_LOCAL_SOURCE_ROOT`` is set) anything that
+        # escapes the allowlist root.
+        if body.kind != SourceKind.GITLAB:
+            try:
+                resolve_local_path(
+                    SourceConfig(kind=body.kind, name=body.name, config=body.config)
+                )
+            except LocalPathRejected as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+
         return await source_repo.insert(
             SourceCreate(
                 scope=body.scope,
@@ -785,14 +798,18 @@ async def validate_source(body: SourceValidateBody) -> dict[str, Any]:
         finally:
             connector.close()
 
-    # File-based connectors: check the path exists (can't really validate
-    # content without running a full walk).
-    from pathlib import Path
+    # File-based connectors: resolve through the shared
+    # ``resolve_local_path`` so the same allowlist + missing-path
+    # rejection applies on the validate path that ingest will use.
+    # ``LocalPathRejected`` is the typed signal for "this caller
+    # asked for an unsafe path"; map it to 400.
+    try:
+        local = resolve_local_path(
+            SourceConfig(kind=body.kind, name="validate", config=body.config)
+        )
+    except LocalPathRejected as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
-    path = body.config.get("path")
-    if not path:
-        raise HTTPException(status_code=400, detail="Config 'path' is required for this connector kind")
-    local = Path(path).expanduser()
     if not local.exists():
         raise HTTPException(status_code=400, detail=f"Path does not exist: {local}")
     return {"ok": True, "kind": body.kind, "path": str(local)}
