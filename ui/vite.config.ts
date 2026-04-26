@@ -101,14 +101,30 @@ const CHUNK_GROUPS: Array<{
     // blast-radius view in /analyze. Pulling these out of misc-vendor
     // is the single biggest payload win after shiki -- ``@xyflow/react``
     // alone is ~4.6 MB on disk and ``@dagrejs/dagre`` is ~2 MB.
+    //
+    // The match list has to cover the *whole* graph dependency
+    // island, not just the public packages. Round 17 missed the
+    // transitives (``@xyflow/system``, ``classcat``, ``@dagrejs/graphlib``)
+    // and they fell into ``misc-vendor``, creating a circular
+    // ``misc-vendor -> graph -> misc-vendor`` warning because
+    // ``@xyflow/react`` (in ``graph``) imported ``@xyflow/system``
+    // (in ``misc-vendor``) which imported other ``@xyflow`` modules
+    // back in ``graph``. Round 18 widens to the full island.
     name: "graph",
     matches: [
-      "@xyflow/react",
-      "@dagrejs/dagre",
+      // Whole xyflow scope -- catches ``@xyflow/react``,
+      // ``@xyflow/system``, and any future sibling packages.
+      /^@xyflow\//,
+      // Whole dagrejs scope -- catches ``@dagrejs/dagre`` and
+      // ``@dagrejs/graphlib``.
+      /^@dagrejs\//,
       "dagre",
-      // d3 sub-packages xyflow uses for force layout. They're tiny
-      // individually but they cluster -- group them with the
-      // consumer.
+      // ``classcat`` is xyflow's class-name helper; only xyflow
+      // uses it in this tree.
+      "classcat",
+      // d3 sub-packages xyflow uses for force layout. They're
+      // tiny individually but they cluster -- group them with
+      // the consumer.
       /^d3-/,
     ],
   },
