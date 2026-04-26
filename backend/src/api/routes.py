@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from src.agents.orchestrator import run_analysis
-from src.api.chat import _conversations, chat_stream
+from src.api.chat import _conversation_updated_at, _conversations, chat_stream
 from src.api.streaming import create_step_callback, event_store, stream_events
 from src.catalog import ServiceRepository, TeamRepository
 from src.config import settings
@@ -631,17 +631,33 @@ async def chat(request_body: ChatRequest, request: Request):
 
 @router.get("/chat/conversations")
 async def list_conversations():
+    """List the in-memory chat conversations.
+
+    Includes ``updated_at`` (UNIX seconds, wall-clock of the last
+    successful commit) so the frontend palette can bucket by recency
+    instead of stamping every backend-loaded conversation with the
+    page-load timestamp. ``last_message`` is a short slice of the most
+    recent message content -- the palette uses it for substring search
+    + the preview rendered under the title.
+
+    Sorted descending by ``updated_at`` so the first row is the most
+    recent. Conversations without a recorded timestamp (shouldn't
+    happen post-fix, but we don't error on legacy state) sort last.
+    """
     convos = []
     for conv_id, messages in _conversations.items():
-        if messages:
-            convos.append(
-                {
-                    "conversation_id": conv_id,
-                    "message_count": len(messages),
-                    "last_message": messages[-1]["content"][:100] if messages else "",
-                    "preview": messages[0]["content"][:100] if messages else "",
-                }
-            )
+        if not messages:
+            continue
+        convos.append(
+            {
+                "conversation_id": conv_id,
+                "message_count": len(messages),
+                "last_message": messages[-1]["content"][:100],
+                "preview": messages[0]["content"][:100],
+                "updated_at": _conversation_updated_at.get(conv_id),
+            }
+        )
+    convos.sort(key=lambda c: c.get("updated_at") or 0.0, reverse=True)
     return {"conversations": convos}
 
 
@@ -733,6 +749,9 @@ async def get_chat_source_preview(
 async def delete_conversation(conversation_id: str):
     if conversation_id in _conversations:
         del _conversations[conversation_id]
+        # Drop the matching ``updated_at`` so a stale timestamp can't
+        # outlive the conversation it described.
+        _conversation_updated_at.pop(conversation_id, None)
         return {"status": "deleted", "conversation_id": conversation_id}
     raise HTTPException(status_code=404, detail="Conversation not found")
 

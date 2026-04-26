@@ -47,7 +47,12 @@ export function ConversationCommandPalette({
 
   // Sort by recency, then bucket. A chat with no messages keeps its
   // ``updatedAt`` (set when created) so brand-new empty chats still
-  // surface near the top.
+  // surface near the top. Search matches the conversation title +
+  // ``lastMessage`` (hydrated from the backend list endpoint when
+  // available, falling back to ``messages[last]`` for chats created
+  // in the current session). Without ``lastMessage`` the search box
+  // would silently miss any conversation whose messages haven't been
+  // loaded yet -- which is every backend-restored conversation.
   const ranked = useMemo(() => {
     const sorted = [...conversations].sort(
       (a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
@@ -56,18 +61,21 @@ export function ConversationCommandPalette({
     if (!q) return sorted;
     return sorted.filter((c) => {
       if (c.title?.toLowerCase().includes(q)) return true;
+      if (c.lastMessage?.toLowerCase().includes(q)) return true;
       const lastMsg = c.messages[c.messages.length - 1];
       if (lastMsg?.content?.toLowerCase().includes(q)) return true;
       return false;
     });
   }, [conversations, query]);
 
-  // Keep the highlighted index inside the visible range when the
-  // filter shrinks. Without this, a previously-valid index can point
-  // past the end of ``ranked``.
+  // Keep the highlighted index inside the selectable range. The
+  // command space is ``[0]`` (New conversation) + ``[1..ranked.length]``
+  // (conversations), so the ceiling is ``ranked.length`` -- when the
+  // filter shrinks to zero matches the highlight clamps back to 0
+  // (the New row), which is always selectable.
   useEffect(() => {
-    if (highlight >= ranked.length) {
-      setHighlight(Math.max(0, ranked.length - 1));
+    if (highlight > ranked.length) {
+      setHighlight(ranked.length);
     }
   }, [ranked.length, highlight]);
 
@@ -87,9 +95,15 @@ export function ConversationCommandPalette({
 
   if (!open) return null;
 
-  function commit(conv: Conversation) {
+  function commitConversation(conv: Conversation) {
     onOpenChange(false);
     navigate({ to: "/chat/$conversationId", params: { conversationId: conv.id } });
+  }
+
+  function commitNew() {
+    onOpenChange(false);
+    onNew();
+    navigate({ to: "/chat" });
   }
 
   function bucket(conv: Conversation): string {
@@ -102,12 +116,24 @@ export function ConversationCommandPalette({
     return "Older";
   }
 
-  // Build the flat list with bucket headers interleaved. We track the
-  // selectable index in parallel so ``aria-activedescendant`` and the
-  // visual highlight stay in lockstep with the keyboard nav.
+  // The selectable command space is "New conversation" at index 0
+  // followed by the ranked conversations at indices 1..N. Modeling it
+  // as a single command array (rather than only conversations) means
+  // ↑↓ and Enter both reach the New row -- previously the New row had
+  // an Enter glyph but pressing Enter only committed
+  // ``ranked[highlight]``, so with zero conversations or no matches
+  // Enter was a no-op even though the visible top command suggested
+  // it would do something.
+  const totalCommands = 1 + ranked.length;
+
+  // Build the flat list with bucket headers interleaved between
+  // conversation rows (the "New conversation" row sits above the list
+  // and is rendered separately). ``commandIndex`` is the position in
+  // the unified command array, so the visual highlight uses the same
+  // numbering as the keyboard nav state.
   const flat: Array<
     | { kind: "header"; label: string }
-    | { kind: "row"; conv: Conversation; index: number }
+    | { kind: "row"; conv: Conversation; commandIndex: number }
   > = [];
   let lastBucket: string | null = null;
   ranked.forEach((c, i) => {
@@ -116,20 +142,24 @@ export function ConversationCommandPalette({
       flat.push({ kind: "header", label: b });
       lastBucket = b;
     }
-    flat.push({ kind: "row", conv: c, index: i });
+    flat.push({ kind: "row", conv: c, commandIndex: i + 1 });
   });
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setHighlight((h) => Math.min(h + 1, ranked.length - 1));
+      setHighlight((h) => Math.min(h + 1, totalCommands - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setHighlight((h) => Math.max(h - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      const target = ranked[highlight];
-      if (target) commit(target);
+      if (highlight === 0) {
+        commitNew();
+      } else {
+        const target = ranked[highlight - 1];
+        if (target) commitConversation(target);
+      }
     } else if (e.key === "Escape") {
       e.preventDefault();
       onOpenChange(false);
@@ -176,21 +206,31 @@ export function ConversationCommandPalette({
         </div>
 
         <div className="max-h-[60vh] overflow-y-auto">
-          {/* New-chat affordance always at the top so Cmd+K can act as
-              a "go" launcher even before any conversations exist. */}
+          {/* New-chat affordance always at the top -- always selectable
+              as command index 0 so Cmd+K can act as a "go" launcher
+              even before any conversations exist. */}
           <button
             type="button"
-            onClick={() => {
-              onOpenChange(false);
-              onNew();
-              navigate({ to: "/chat" });
-            }}
-            className="
+            // ``onPointerMove`` instead of ``onMouseEnter`` because
+            // mouseenter fires when an element appears under a
+            // stationary cursor (e.g. on palette open). That bumped
+            // highlight off the keyboard-default of 0 if the cursor
+            // happened to be over a conversation row when ⌘K was
+            // pressed -- pointermove only fires on real movement, so
+            // the keyboard-default sticks.
+            onPointerMove={() => setHighlight(0)}
+            onClick={commitNew}
+            className={`
               w-full flex items-center gap-3 px-4 py-2.5 text-left
               text-[13px] text-zinc-700 dark:text-zinc-300
-              hover:bg-zinc-50 dark:hover:bg-zinc-800/50
               border-b border-zinc-100 dark:border-zinc-700/40
-            "
+              transition-colors duration-100
+              ${
+                highlight === 0
+                  ? "bg-zinc-100 dark:bg-zinc-800/60"
+                  : "hover:bg-zinc-50 dark:hover:bg-zinc-800/50"
+              }
+            `}
           >
             <Plus className="w-4 h-4 text-zinc-400" aria-hidden="true" />
             <span>New conversation</span>
@@ -221,17 +261,25 @@ export function ConversationCommandPalette({
                   </div>
                 );
               }
-              const { conv, index } = row;
-              const isHighlighted = index === highlight;
+              const { conv, commandIndex } = row;
+              const isHighlighted = commandIndex === highlight;
               const lastMsg = conv.messages[conv.messages.length - 1];
+              // Prefer in-session ``messages[last]`` over the
+              // backend-snapshot ``lastMessage`` so a new turn the
+              // user just sent isn't shadowed by stale list data.
               const preview =
-                lastMsg?.content.slice(0, 80) || "(empty conversation)";
+                lastMsg?.content.slice(0, 80) ||
+                conv.lastMessage ||
+                "(empty conversation)";
               return (
                 <button
                   key={conv.id}
                   type="button"
-                  onMouseEnter={() => setHighlight(index)}
-                  onClick={() => commit(conv)}
+                  // See the New row -- pointermove not mouseenter so
+                  // a static cursor over a fresh row doesn't bump
+                  // the keyboard highlight off 0.
+                  onPointerMove={() => setHighlight(commandIndex)}
+                  onClick={() => commitConversation(conv)}
                   className={`
                     w-full text-left px-4 py-2.5
                     transition-colors duration-100

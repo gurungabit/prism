@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from collections import defaultdict
 from typing import AsyncGenerator
@@ -13,6 +14,20 @@ from src.retrieval.hybrid_search import HybridSearchEngine, RetrievalUnavailable
 log = get_logger("chat")
 
 _conversations: dict[str, list[dict]] = defaultdict(list)
+# Wall-clock UNIX seconds of the most recent commit per conversation.
+# Tracked alongside ``_conversations`` so the list endpoint can expose
+# ``updated_at`` -- without this, the frontend conversation palette
+# bucketed every backend-loaded conversation as "Today" because it had
+# no real timestamp to sort by.
+_conversation_updated_at: dict[str, float] = {}
+
+
+def _touch_conversation(conv_id: str) -> None:
+    """Stamp a conversation as just-updated. Called from the
+    ``chat_stream`` post-success commit so the bookkeeping stays
+    inside the only place that mutates ``_conversations``.
+    """
+    _conversation_updated_at[conv_id] = time.time()
 
 
 async def chat_stream(
@@ -178,6 +193,7 @@ RULES:
                 "citations": citations,
             }
         )
+        _touch_conversation(conversation_id)
 
     except Exception as e:
         # LLM call failed mid-stream (provider down, proxy timeout, auth

@@ -22,12 +22,14 @@ from src.retrieval.hybrid_search import RetrievalUnavailable
 
 @pytest.fixture(autouse=True)
 def _clean_conversations():
-    """Reset the in-memory conversations dict between tests so they
-    don't bleed into each other.
+    """Reset the in-memory conversations + per-conversation timestamp
+    dicts between tests so state doesn't bleed across cases.
     """
     chat_module._conversations.clear()
+    chat_module._conversation_updated_at.clear()
     yield
     chat_module._conversations.clear()
+    chat_module._conversation_updated_at.clear()
 
 
 async def _drain(gen):
@@ -75,6 +77,9 @@ def test_retrieval_failure_does_not_pollute_conversation_history():
     # And critically: the user message was *not* committed to history.
     # No other request can pull this orphan into its prompt context.
     assert chat_module._conversations.get(conv_id, []) == []
+    # Failed turn is also absent from the timestamp dict, so the list
+    # endpoint won't surface a phantom "Today" conversation.
+    assert conv_id not in chat_module._conversation_updated_at
 
 
 def test_llm_failure_does_not_pollute_conversation_history():
@@ -118,6 +123,7 @@ def test_llm_failure_does_not_pollute_conversation_history():
 
     # User message stays out of history -- this turn never happened.
     assert chat_module._conversations.get(conv_id, []) == []
+    assert conv_id not in chat_module._conversation_updated_at
 
 
 def test_successful_turn_commits_user_and_assistant_pair():
@@ -169,6 +175,9 @@ def test_successful_turn_commits_user_and_assistant_pair():
     assert history[0]["content"] == "greet me"
     assert history[1]["role"] == "assistant"
     assert history[1]["content"] == "hello world"
+    # ``_touch_conversation`` ran alongside the commit so the list
+    # endpoint can sort by recency.
+    assert conv_id in chat_module._conversation_updated_at
 
 
 def _make_token_chunk(text: str):
