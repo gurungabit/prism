@@ -638,9 +638,11 @@ async def list_source_documents(
     Powers the source detail page's infinite-scroll list. The route
     returns ``(documents, offset, limit, total, has_more)`` so the
     frontend's ``useInfiniteQuery`` can compute the next page param
-    without a second round trip. ``GET /api/sources/{id}`` still
-    returns the full list inline for back-compat callers; new UIs
-    should use this paginated endpoint.
+    without a second round trip. The list is the *only* place the
+    documents array is exposed -- ``GET /api/sources/{id}`` returns
+    the source row + ``document_count`` only (the legacy inline
+    ``documents`` field was removed; POC posture is
+    ``./run.sh --clean`` with no API consumers in the wild).
 
     Bounded ``limit`` (200) keeps a single response from getting
     pathological if a client tries to use this as a "give me

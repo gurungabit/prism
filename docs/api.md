@@ -243,6 +243,7 @@ don't break route matching. Matching is case-insensitive.
 GET    /api/sources?org_id=&team_id=&service_id=
 GET    /api/sources/{source_id}
 GET    /api/sources/{source_id}/status
+GET    /api/sources/{source_id}/documents?offset=0&limit=50
 ```
 
 Response shape (list):
@@ -267,6 +268,45 @@ Response shape (list):
   "total": 1
 }
 ```
+
+`GET /api/sources/{source_id}` returns the source row plus a
+`document_count` (single `SELECT COUNT(*)` on `document_registry`).
+The full document list is **not** inlined here — use the paginated
+documents endpoint below.
+
+#### Paginated documents
+
+```http
+GET /api/sources/{source_id}/documents?offset=0&limit=50
+```
+
+`offset` is `>= 0`; `limit` is `1..200` (clamped server-side).
+Response:
+
+```json
+{
+  "documents": [
+    {
+      "document_id": "...",
+      "source_path": "necrokings/gitlabissue@main:README.md",
+      "chunk_count": 13,
+      "status": "indexed",
+      "last_ingested_at": "2026-04-25T20:00:00Z",
+      "source_platform": "gitlab",
+      "title": "GitLab Issue Creator",
+      "source_url": "https://gitlab.com/.../README.md"
+    }
+  ],
+  "offset": 0,
+  "limit": 50,
+  "total": 87,
+  "has_more": true
+}
+```
+
+Powers the source detail page's infinite-scroll list via TanStack
+`useInfiniteQuery`. `has_more` is `offset + len(documents) < total`;
+the frontend uses it as the "stop" signal for `getNextPageParam`.
 
 ### Create
 

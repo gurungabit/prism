@@ -363,10 +363,21 @@ class SourceRepository(CatalogRepo):
                 return 0
 
     async def count_docs(self, source_id: UUID) -> int:
-        """Count declared source's indexed docs (for the sources list UI)."""
+        """Count of documents currently indexed for this source.
+
+        Counts ``document_registry`` (not ``kg_documents``) because the
+        registry is what the tombstone path curates: when a doc is
+        removed upstream, its registry row + OpenSearch chunks go,
+        but the corresponding ``kg_documents`` row stays as a graph
+        node. Counting ``kg_documents`` would let the source detail
+        header keep showing pre-tombstone numbers while the
+        paginated ``/documents`` endpoint (also registry-backed)
+        shows fewer rows -- a header / list divergence codex
+        round-19 caught.
+        """
         async with self.pool.acquire() as conn:
             return await conn.fetchval(
-                "SELECT COUNT(*) FROM kg_documents WHERE source_id = $1",
+                "SELECT COUNT(*) FROM document_registry WHERE source_id = $1",
                 source_id,
             ) or 0
 

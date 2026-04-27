@@ -106,6 +106,22 @@ export function ChatConversationPage() {
     return () => node.removeEventListener("scroll", update);
   }, [conversationId]);
 
+  // Reset bottom-stickiness on conversation change. The route
+  // component doesn't unmount when navigating between
+  // ``/chat/A`` -> ``/chat/B`` (same route shape), so without this
+  // the previous thread's ``isNearBottom = false`` (e.g. after the
+  // user scrolled up) leaks into the new thread, the auto-scroll
+  // effect refuses to jump, and the user lands mid-thread with the
+  // floating button visible instead of at the latest turn. The
+  // ``rAF`` defers the scroll until after the new messages have
+  // rendered into the DOM so ``scrollHeight`` is the real height,
+  // not the previous thread's.
+  useEffect(() => {
+    setIsNearBottom(true);
+    const handle = requestAnimationFrame(() => scrollToBottom("auto"));
+    return () => cancelAnimationFrame(handle);
+  }, [conversationId]);
+
   // Auto-scroll on message append / streaming, but only when the user
   // was already at the bottom. If they've scrolled up to read older
   // turns, the floating button is the way back -- we don't yank them.

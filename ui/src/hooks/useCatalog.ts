@@ -382,8 +382,11 @@ export function useSourceStatus(sourceId: string | undefined, enabled = true) {
     if (!current || !sourceId) return;
     const prev = prevStatusRef.current;
     // Transition from active (syncing/pending) to settled (ready/error)
-    // means ``document_count`` and ``documents`` are now stale on the
-    // detail view. Invalidate so they refetch without a manual reload.
+    // means ``document_count`` AND the paginated documents list are
+    // now stale on the detail view. Invalidate all three caches so
+    // header + list refetch without a manual reload. ``source-documents``
+    // is the round-19 infinite-query key; it was missing from the
+    // settled-transition fan-out until codex round-20.
     if (
       (prev === "syncing" || prev === "pending") &&
       current !== "syncing" &&
@@ -391,6 +394,7 @@ export function useSourceStatus(sourceId: string | undefined, enabled = true) {
     ) {
       qc.invalidateQueries({ queryKey: ["declared-source", sourceId] });
       qc.invalidateQueries({ queryKey: ["declared-sources"] });
+      qc.invalidateQueries({ queryKey: ["source-documents", sourceId] });
     }
     prevStatusRef.current = current;
   }, [query.data?.status, sourceId, qc]);
@@ -419,6 +423,11 @@ export function useUpdateSource() {
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["declared-source", vars.sourceId] });
       qc.invalidateQueries({ queryKey: ["declared-sources"] });
+      // A config change can mean a different upstream root / project,
+      // which would re-shape the document set on the next ingest.
+      // Drop the cached pages so the detail page doesn't render
+      // pre-update rows next to a newly-renamed source.
+      qc.invalidateQueries({ queryKey: ["source-documents", vars.sourceId] });
     },
   });
 }
@@ -427,7 +436,14 @@ export function useDeleteSource() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (sourceId: string) => deleteSource(sourceId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["declared-sources"] }),
+    onSuccess: (_data, sourceId) => {
+      qc.invalidateQueries({ queryKey: ["declared-sources"] });
+      // Source is gone; pages cached against it are dead data. Drop
+      // them outright so any in-flight detail page render that
+      // races the delete doesn't try to use them.
+      qc.removeQueries({ queryKey: ["source-documents", sourceId] });
+      qc.removeQueries({ queryKey: ["declared-source", sourceId] });
+    },
   });
 }
 
@@ -440,6 +456,11 @@ export function useTriggerIngest() {
       qc.invalidateQueries({ queryKey: ["declared-source", vars.sourceId] });
       qc.invalidateQueries({ queryKey: ["declared-source-status", vars.sourceId] });
       qc.invalidateQueries({ queryKey: ["declared-sources"] });
+      // Force re-index wipes every chunk + registry row before
+      // re-ingesting; even a normal sync can churn the doc set.
+      // Either way the cached pages are stale -- invalidate so the
+      // detail page refetches once the sync settles.
+      qc.invalidateQueries({ queryKey: ["source-documents", vars.sourceId] });
     },
   });
 }
