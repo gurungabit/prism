@@ -193,12 +193,12 @@ export function NewSourcePage() {
       // Pre-seed the detail-page queries so the destination renders
       // immediately instead of flashing its loading skeleton while the
       // first fetch resolves. The source row we just created has every
-      // field ``useDeclaredSource`` needs except the derived ``documents``
-      // list, which it'll populate on the first poll tick.
+      // field ``useDeclaredSource`` needs except ``document_count``,
+      // which is computed server-side. The detail page's infinite-doc
+      // query handles the document list separately.
       qc.setQueryData(["declared-source", created.id], {
         ...created,
         document_count: 0,
-        documents: [],
       });
       qc.setQueryData(["declared-source-status", created.id], {
         source_id: created.id,

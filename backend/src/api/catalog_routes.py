@@ -605,17 +605,23 @@ async def list_sources(
 
 @router.get("/sources/{source_id}")
 async def get_source(source_id: UUID) -> dict[str, Any]:
+    """Source row + document count.
+
+    The inline ``documents`` array used to be returned here too, but
+    the source detail page now uses the paginated
+    ``GET /api/sources/{id}/documents`` endpoint. POC posture is
+    ``./run.sh --clean`` (no migrations, no API consumers in the
+    wild) so there's no back-compat to preserve. ``document_count``
+    stays for the metadata header on the detail page.
+    """
     source_repo = await SourceRepository.create()
     try:
         source = await source_repo.get(source_id)
         if source is None:
             raise HTTPException(status_code=404, detail="Source not found")
-
-        documents = await source_repo.list_documents(source_id)
         return {
             **source.model_dump(mode="json"),
-            "documents": documents,
-            "document_count": len(documents),
+            "document_count": await source_repo.count_docs(source_id),
         }
     finally:
         await source_repo.close()

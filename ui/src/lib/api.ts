@@ -456,9 +456,11 @@ export function listDeclaredSources(params?: {
 }
 
 export function getDeclaredSource(sourceId: string) {
-  return request<DeclaredSource & { documents: SourceDocument[] }>(
-    `/api/sources/${sourceId}`,
-  );
+  // ``documents`` is no longer inlined here -- the source detail
+  // page uses the paginated ``GET /api/sources/{id}/documents``
+  // endpoint instead, so this response is the source row plus a
+  // ``document_count`` for the header.
+  return request<DeclaredSource>(`/api/sources/${sourceId}`);
 }
 
 export interface SourceDocumentsPage {

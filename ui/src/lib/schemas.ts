@@ -298,31 +298,6 @@ export const HistoryResponseSchema = z.object({
 
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 
-// ── Sources listing ───────────────────────────────────
-
-export const SourceDocListSchema = z.object({
-  document_id: z.string(),
-  source_path: z.string(),
-  chunk_count: z.number().default(0),
-  status: z.string().default("unknown"),
-  last_ingested_at: z.string().nullable().default(null),
-});
-
-export const SourceGroupSchema = z.object({
-  platform: z.string(),
-  document_count: z.number(),
-  last_ingested: z.string().nullable().default(null),
-  documents: z.array(SourceDocListSchema).default([]),
-});
-
-export const SourcesResponseSchema = z.object({
-  sources: z.array(SourceGroupSchema),
-  total: z.number(),
-});
-
-export type SourceGroup = z.infer<typeof SourceGroupSchema>;
-export type SourceDocList = z.infer<typeof SourceDocListSchema>;
-
 // ── Chat ──────────────────────────────────────────────
 
 export const ChatMessageSchema = z.object({
