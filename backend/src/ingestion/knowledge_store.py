@@ -126,6 +126,38 @@ class KnowledgeStore:
                 service_id,
             )
 
+    async def delete_documents(
+        self, source_id: UUID, document_ids: list[str]
+    ) -> int:
+        """Drop ``kg_documents`` rows by id, scoped to ``source_id``.
+
+        Used by the content-update path: when a doc's content hash
+        changes the pipeline issues a fresh ``document_id`` for the new
+        chunk set, but the old ``kg_documents`` row keyed on the
+        previous id survives because the new ``ON CONFLICT (id)``
+        upsert lands on a brand-new uuid. This drops the orphan after
+        the new graph row + registry upsert have committed.
+
+        ``source_id`` is in the predicate as a defensive scope check:
+        a stray doc_id from a different source cannot clobber rows it
+        does not own. Returns the number of rows dropped (0 on no-op).
+        """
+        if not document_ids:
+            return 0
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                DELETE FROM kg_documents
+                WHERE source_id = $1 AND id = ANY($2::text[])
+                """,
+                source_id,
+                document_ids,
+            )
+            try:
+                return int(result.split()[-1])
+            except (ValueError, IndexError):
+                return 0
+
     # ----- kg_dependencies -----
 
     async def add_dependency(

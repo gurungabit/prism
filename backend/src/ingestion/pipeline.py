@@ -64,6 +64,12 @@ class PreparedDocument:
     parsed_content: str
     content_hash: str
     chunks: list[Chunk] = field(default_factory=list)
+    # When the doc replaces an earlier ingest of the same source_path
+    # (hash mismatch), this carries the previous ``document_id``. The
+    # graph table's ``ON CONFLICT (id)`` upsert can't reach that row
+    # because the new id is freshly generated, so phase 4 explicitly
+    # deletes it after the new row + registry upsert succeed.
+    replaces_document_id: str | None = None
 
 
 @dataclass
@@ -276,6 +282,7 @@ class IngestionPipeline:
                 content = raw_doc.content if isinstance(raw_doc.content, str) else raw_doc.content
                 content_hash = compute_content_hash(content)
 
+                replaces_document_id: str | None = None
                 if not force:
                     log.info(
                         "registry_lookup_start",
@@ -297,9 +304,11 @@ class IngestionPipeline:
                         continue
 
                     if existing:
-                        # Drop the stale chunk set before re-indexing with a
-                        # new document_id. The new kg_documents row (same id)
-                        # is overwritten via ON CONFLICT below.
+                        # Drop the stale OS chunk set before re-indexing.
+                        # The old kg_documents row stays for now -- phase
+                        # 4 deletes it after the new graph row + registry
+                        # upsert land, so a crash in between leaves the
+                        # registry pointing somewhere with a usable row.
                         log.info(
                             "opensearch_delete_start",
                             source=source.name,
@@ -316,6 +325,7 @@ class IngestionPipeline:
                             source=source.name,
                             index=idx,
                         )
+                        replaces_document_id = existing["document_id"]
 
                 document_id = str(uuid.uuid4())
                 parsed_content = parse_document(raw_doc)
@@ -354,6 +364,7 @@ class IngestionPipeline:
                         parsed_content=parsed_content,
                         content_hash=content_hash,
                         chunks=chunks,
+                        replaces_document_id=replaces_document_id,
                     )
                 )
 
@@ -421,6 +432,27 @@ class IngestionPipeline:
             except Exception as e:  # noqa: BLE001
                 log.error("graph_populate_failed", path=doc.raw_doc.ref.source_path, error=str(e))
                 stats["failed"] += 1
+                continue
+
+            # Content-update cleanup: drop the orphaned graph row keyed
+            # on the previous document_id. Runs *after* indexed += 1
+            # because a failure here is a small leak, not an indexing
+            # failure -- the new chunk set is already searchable.
+            if (
+                doc.replaces_document_id
+                and doc.replaces_document_id != doc.document_id
+            ):
+                try:
+                    await self.store.delete_documents(
+                        source.id, [doc.replaces_document_id]
+                    )
+                except Exception as e:  # noqa: BLE001
+                    log.warning(
+                        "kg_documents_orphan_cleanup_failed",
+                        path=doc.raw_doc.ref.source_path,
+                        old_document_id=doc.replaces_document_id,
+                        error=str(e)[:200],
+                    )
 
         log.info(
             "source_complete",

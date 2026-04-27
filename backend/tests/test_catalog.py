@@ -641,3 +641,169 @@ def test_tombstone_drops_both_registry_and_kg_documents(fresh_dsn: str):
             await orgs.close()
 
     asyncio.run(_run())
+
+
+def test_content_update_leaves_exactly_one_row_per_table(fresh_dsn: str):
+    """Re-ingesting the same ``source_path`` with changed content must
+    leave exactly one ``document_registry`` row AND one ``kg_documents``
+    row for the (source_id, source_path) pair.
+
+    The pipeline's content-update path generates a fresh ``document_id``
+    for the new chunk set. ``registry.upsert`` re-points
+    ``document_registry`` at the new id via ON CONFLICT(source_id,
+    source_path), but the old ``kg_documents`` row stays orphaned
+    because ON CONFLICT(id) on the new graph row can't reach the
+    previous id. The pipeline drops the orphan via
+    ``KnowledgeStore.delete_documents`` after the new graph row +
+    registry upsert have committed; this test exercises that sequence
+    directly.
+    """
+    from src.ingestion.knowledge_store import KnowledgeStore
+    from src.ingestion.registry import DocumentRegistry, compute_content_hash
+    from src.models.document import DocumentMetadata, DocumentRef, RawDocument
+
+    async def _run() -> None:
+        orgs = await OrgRepository.create(dsn=fresh_dsn)
+        teams = await TeamRepository.create(dsn=fresh_dsn)
+        services = await ServiceRepository.create(dsn=fresh_dsn)
+        sources = await SourceRepository.create(dsn=fresh_dsn)
+        registry = await DocumentRegistry.create(dsn=fresh_dsn)
+        store = await KnowledgeStore.create(dsn=fresh_dsn)
+        try:
+            org = await orgs.insert("Acme")
+            team = await teams.insert(org.id, "Platform")
+            svc = await services.insert(team.id, "service-a")
+            src = await sources.insert(
+                SourceCreate(
+                    scope=SourceScope.SERVICE,
+                    scope_id=svc.id,
+                    kind=SourceKind.GITLAB,
+                    name="A",
+                    config={"project_path": "org/a"},
+                )
+            )
+
+            path = "README.md"
+            old_doc_id = str(uuid.uuid4())
+            new_doc_id = str(uuid.uuid4())
+
+            def _doc(doc_id: str) -> RawDocument:
+                return RawDocument(
+                    ref=DocumentRef(
+                        source_platform="gitlab",
+                        source_path=path,
+                    ),
+                    content="x",
+                    metadata=DocumentMetadata(title=path),
+                )
+
+            # First ingest: registry + kg_documents both pointing to old id.
+            await store.add_document(
+                old_doc_id,
+                _doc(old_doc_id),
+                source_id=src.id,
+                org_id=org.id,
+                team_id=team.id,
+                service_id=svc.id,
+            )
+            await registry.upsert(
+                document_id=old_doc_id,
+                source_platform="gitlab",
+                source_path=path,
+                content_hash=compute_content_hash("v1"),
+                chunk_count=2,
+                source_id=src.id,
+            )
+
+            # Content-update sequence as the pipeline runs it: new graph
+            # row, registry upsert (re-points document_id), then drop the
+            # orphaned old kg_documents row.
+            await store.add_document(
+                new_doc_id,
+                _doc(new_doc_id),
+                source_id=src.id,
+                org_id=org.id,
+                team_id=team.id,
+                service_id=svc.id,
+            )
+            await registry.upsert(
+                document_id=new_doc_id,
+                source_platform="gitlab",
+                source_path=path,
+                content_hash=compute_content_hash("v2"),
+                chunk_count=3,
+                source_id=src.id,
+            )
+            dropped = await store.delete_documents(src.id, [old_doc_id])
+            assert dropped == 1
+
+            async with registry.pool.acquire() as conn:
+                # Exactly one registry row for the (source, path) pair,
+                # pointing at the new doc id.
+                reg_rows = await conn.fetch(
+                    """
+                    SELECT document_id FROM document_registry
+                    WHERE source_id = $1 AND source_path = $2
+                    """,
+                    src.id,
+                    path,
+                )
+                assert len(reg_rows) == 1
+                assert reg_rows[0]["document_id"] == new_doc_id
+
+                # Exactly one kg_documents row for the source's
+                # (source_id, path) pair, also pointing at the new id.
+                kg_rows = await conn.fetch(
+                    "SELECT id FROM kg_documents WHERE source_id = $1 AND path = $2",
+                    src.id,
+                    path,
+                )
+                assert len(kg_rows) == 1
+                assert kg_rows[0]["id"] == new_doc_id
+
+                # Old graph row gone; new one present (defensive check).
+                assert (
+                    await conn.fetchrow(
+                        "SELECT 1 FROM kg_documents WHERE id = $1",
+                        old_doc_id,
+                    )
+                    is None
+                )
+                assert (
+                    await conn.fetchrow(
+                        "SELECT 1 FROM kg_documents WHERE id = $1",
+                        new_doc_id,
+                    )
+                    is not None
+                )
+
+            # Cross-source defensive scope: deleting the new doc_id under
+            # a stranger source must be a no-op.
+            other_src = await sources.insert(
+                SourceCreate(
+                    scope=SourceScope.SERVICE,
+                    scope_id=svc.id,
+                    kind=SourceKind.GITLAB,
+                    name="other",
+                    config={"project_path": "org/other"},
+                )
+            )
+            no_op = await store.delete_documents(other_src.id, [new_doc_id])
+            assert no_op == 0
+            async with registry.pool.acquire() as conn:
+                assert (
+                    await conn.fetchrow(
+                        "SELECT 1 FROM kg_documents WHERE id = $1",
+                        new_doc_id,
+                    )
+                    is not None
+                )
+        finally:
+            await store.close()
+            await registry.close()
+            await sources.close()
+            await services.close()
+            await teams.close()
+            await orgs.close()
+
+    asyncio.run(_run())
