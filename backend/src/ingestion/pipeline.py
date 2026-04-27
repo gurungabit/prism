@@ -266,9 +266,6 @@ class IngestionPipeline:
                     total=len(doc_refs),
                     path=ref.source_path,
                 )
-                # Connector uses a sync httpx.Client; run per-doc fetches on a
-                # worker thread so the event loop stays responsive for the UI
-                # while we walk a large repo.
                 raw_doc = await asyncio.to_thread(connector.fetch_document, ref)
                 log.info(
                     "fetch_document_ok",
@@ -303,9 +300,6 @@ class IngestionPipeline:
                         # Drop the stale chunk set before re-indexing with a
                         # new document_id. The new kg_documents row (same id)
                         # is overwritten via ON CONFLICT below.
-                        # delete_by_query w/ refresh=True is sync and can
-                        # block the event loop for seconds, so push to a
-                        # worker thread.
                         log.info(
                             "opensearch_delete_start",
                             source=source.name,
@@ -507,10 +501,9 @@ class IngestionPipeline:
             chunk.metadata.service_id = scope.service_id
 
     async def close(self) -> None:
-        # The catalog repos share the DSN with the registry/store, so they
-        # all close the same shared pool. We only need to close the ones that
-        # may own a private pool (none do in practice, but we call close
-        # defensively).
+        # All repos share the same Postgres pool; close() is a no-op for
+        # the non-owners but kept symmetric for the test path that hands
+        # in a private DSN.
         await self.registry.close()
         await self.store.close()
         await self.org_repo.close()

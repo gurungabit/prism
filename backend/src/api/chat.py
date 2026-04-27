@@ -95,8 +95,6 @@ class ChatConversationStore:
         self._updated_at.clear()
 
 
-# Module-level singleton. Routes import ``conversation_store`` and
-# call methods on it instead of importing the underlying dicts.
 conversation_store = ChatConversationStore()
 
 

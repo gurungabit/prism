@@ -530,11 +530,6 @@ async def get_dependencies(service_name: str, depth: int = Query(default=2, ge=1
     return {"service": service_name, "depth": depth, "dependencies": deps}
 
 
-# ``/api/graph/conflicts`` is removed in Phase 1 (plan open question 4). The
-# declared catalog can't produce ownership conflicts at the data layer, so
-# the endpoint was returning misleading data. The UI widget is also removed.
-
-
 @router.delete("/history/{analysis_id}")
 async def delete_analysis(analysis_id: str):
     repo = await AnalysisRepository.create()
@@ -764,9 +759,6 @@ async def get_chat_source_preview(
 
 @router.delete("/chat/{conversation_id}")
 async def delete_conversation(conversation_id: str):
-    # ``conversation_store.delete`` removes both the message list and
-    # the ``updated_at`` stamp atomically, so the route doesn't need
-    # to remember to do the second drop.
     if conversation_store.delete(conversation_id):
         return {"status": "deleted", "conversation_id": conversation_id}
     raise HTTPException(status_code=404, detail="Conversation not found")
