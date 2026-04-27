@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState } from "react";
 import { useParams, useNavigate } from "@tanstack/react-router";
+import { ArrowDown } from "lucide-react";
 import { useChat, useConversation, useConversations, useDeleteConversation } from "../hooks/useChat";
 import { useChatStore } from "../stores/chat";
 import { ConversationList } from "../components/chat/ConversationList";
@@ -8,6 +9,12 @@ import { useCommandPalette } from "../hooks/useCommandPalette";
 import { ChatMessage } from "../components/chat/ChatMessage";
 import { ChatInput } from "../components/chat/ChatInput";
 import { ScopeSelector, type ScopeValue } from "../components/catalog/ScopeSelector";
+
+// Pixels from the bottom we still consider "at the bottom". Anything
+// greater means the user has scrolled up and the auto-scroll should
+// stop fighting them; the floating "scroll to bottom" button takes
+// over instead.
+const NEAR_BOTTOM_THRESHOLD = 80;
 
 export function ChatConversationPage() {
   const { conversationId } = useParams({ from: "/chat/$conversationId" });
@@ -68,11 +75,50 @@ export function ChatConversationPage() {
 
   const activeConversation = chat.conversations.find((c) => c.id === conversationId);
 
+  // ``isNearBottom`` drives both the auto-scroll behavior and the
+  // floating button visibility. Default ``true`` so a fresh open
+  // sticks to the latest message; user scrolling up flips it false
+  // and the auto-scroll-on-token-append stops fighting them.
+  const [isNearBottom, setIsNearBottom] = useState(true);
+
+  function scrollToBottom(behavior: ScrollBehavior = "smooth") {
+    const node = scrollRef.current;
+    if (!node) return;
+    node.scrollTo({ top: node.scrollHeight, behavior });
+  }
+
+  // Scroll listener: keep ``isNearBottom`` in sync with the user's
+  // scroll position. ``passive`` so the listener can't accidentally
+  // cancel the scroll, and re-bound on conversation change so
+  // navigating between threads doesn't carry stale state.
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    const node = scrollRef.current;
+    if (!node) return;
+    function update() {
+      const target = scrollRef.current;
+      if (!target) return;
+      const distance =
+        target.scrollHeight - target.scrollTop - target.clientHeight;
+      setIsNearBottom(distance <= NEAR_BOTTOM_THRESHOLD);
     }
-  }, [activeConversation?.messages.length, chat.isStreaming]);
+    update();
+    node.addEventListener("scroll", update, { passive: true });
+    return () => node.removeEventListener("scroll", update);
+  }, [conversationId]);
+
+  // Auto-scroll on message append / streaming, but only when the user
+  // was already at the bottom. If they've scrolled up to read older
+  // turns, the floating button is the way back -- we don't yank them.
+  useEffect(() => {
+    if (isNearBottom) {
+      scrollToBottom("auto");
+    }
+  }, [
+    activeConversation?.messages.length,
+    chat.isStreaming,
+    chat.streamingContent,
+    isNearBottom,
+  ]);
 
   async function handleSend(msg: string) {
     setActiveConversation(conversationId);
@@ -133,35 +179,69 @@ export function ChatConversationPage() {
           </div>
         ) : hasMessages ? (
           <>
-            <div ref={scrollRef} className="flex-1 overflow-y-auto">
-              <div className="max-w-[42rem] mx-auto px-4 py-6 space-y-1">
-                {activeConversation.messages.map((msg) => (
-                  <ChatMessage key={msg.id} message={msg} />
-                ))}
+            {/* Wrapping the scroll area in a ``relative`` container so
+                the floating "scroll to bottom" button can position
+                itself against the messages region rather than the
+                whole page. The button only renders while the user is
+                scrolled away from the bottom -- otherwise it would
+                obscure content for no reason. */}
+            <div className="relative flex-1 min-h-0">
+              <div ref={scrollRef} className="absolute inset-0 overflow-y-auto">
+                <div className="max-w-[42rem] mx-auto px-4 py-6 space-y-1">
+                  {activeConversation.messages.map((msg) => (
+                    <ChatMessage key={msg.id} message={msg} />
+                  ))}
 
-                {isActiveStreaming && chat.streamingContent && (
-                  <ChatMessage
-                    streaming
-                    message={{
-                      id: "__streaming__",
-                      role: "assistant",
-                      content: chat.streamingContent,
-                      citations: chat.streamingCitations,
-                      timestamp: Date.now(),
-                    }}
-                  />
-                )}
+                  {isActiveStreaming && chat.streamingContent && (
+                    <ChatMessage
+                      streaming
+                      message={{
+                        id: "__streaming__",
+                        role: "assistant",
+                        content: chat.streamingContent,
+                        citations: chat.streamingCitations,
+                        timestamp: Date.now(),
+                      }}
+                    />
+                  )}
 
-                {isActiveStreaming && !chat.streamingContent && (
-                  <div className="py-3">
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce" style={{ animationDelay: "0ms" }} />
-                      <span className="w-2 h-2 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce" style={{ animationDelay: "150ms" }} />
-                      <span className="w-2 h-2 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce" style={{ animationDelay: "300ms" }} />
+                  {isActiveStreaming && !chat.streamingContent && (
+                    <div className="py-3">
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce" style={{ animationDelay: "0ms" }} />
+                        <span className="w-2 h-2 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce" style={{ animationDelay: "150ms" }} />
+                        <span className="w-2 h-2 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce" style={{ animationDelay: "300ms" }} />
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
+
+              {!isNearBottom && (
+                <button
+                  type="button"
+                  onClick={() => scrollToBottom("smooth")}
+                  aria-label="Scroll to latest message"
+                  title="Scroll to latest"
+                  className="
+                    absolute bottom-4 left-1/2 -translate-x-1/2 z-10
+                    flex items-center gap-1.5
+                    rounded-full border border-zinc-200 dark:border-zinc-700/60
+                    bg-white/95 dark:bg-zinc-900/95 backdrop-blur
+                    px-3 py-1.5 text-[11px] font-medium
+                    text-zinc-600 dark:text-zinc-300
+                    shadow-md
+                    hover:bg-zinc-50 dark:hover:bg-zinc-800
+                    focus-visible:outline-none focus-visible:ring-2
+                    focus-visible:ring-[var(--color-accent)]
+                    dark:focus-visible:ring-[var(--color-accent-dark)]
+                    transition-colors
+                  "
+                >
+                  <ArrowDown className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Scroll to latest</span>
+                </button>
+              )}
             </div>
 
             <ChatInput
