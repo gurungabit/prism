@@ -363,18 +363,7 @@ class SourceRepository(CatalogRepo):
                 return 0
 
     async def count_docs(self, source_id: UUID) -> int:
-        """Count of documents currently indexed for this source.
-
-        Counts ``document_registry`` (not ``kg_documents``) because the
-        registry is what the tombstone path curates: when a doc is
-        removed upstream, its registry row + OpenSearch chunks go,
-        but the corresponding ``kg_documents`` row stays as a graph
-        node. Counting ``kg_documents`` would let the source detail
-        header keep showing pre-tombstone numbers while the
-        paginated ``/documents`` endpoint (also registry-backed)
-        shows fewer rows -- a header / list divergence codex
-        round-19 caught.
-        """
+        """Count documents currently tracked by the source registry."""
         async with self.pool.acquire() as conn:
             return await conn.fetchval(
                 "SELECT COUNT(*) FROM document_registry WHERE source_id = $1",
@@ -404,20 +393,7 @@ class SourceRepository(CatalogRepo):
         offset: int = 0,
         limit: int = 50,
     ) -> tuple[list[dict[str, Any]], int]:
-        """Paginated variant of ``list_documents`` for the source detail
-        page's infinite-scroll list.
-
-        Returns ``(rows, total)`` so the API layer can emit
-        ``has_more = offset + len(rows) < total`` without a second
-        round trip on the client. Same ordering as ``list_documents``
-        (most-recent ingest first) so each page slice is stable
-        across calls within a single ingest cycle.
-
-        ``offset`` and ``limit`` are clamped at the route boundary;
-        this method trusts what it's given and lets Postgres reject
-        anything pathological. ``COUNT(*)`` runs in the same
-        connection as the slice so the snapshot is consistent.
-        """
+        """Paginated variant of ``list_documents``."""
         async with self.pool.acquire() as conn:
             total = await conn.fetchval(
                 "SELECT COUNT(*) FROM document_registry WHERE source_id = $1",

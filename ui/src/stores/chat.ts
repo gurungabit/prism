@@ -15,11 +15,6 @@ export interface ChatCitation {
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
-  // ``kind`` distinguishes ordinary assistant text from typed
-  // outage events the backend now emits as SSE ``error`` events
-  // (``retrieval_unavailable``, ``llm_unavailable``). Without this
-  // tag the UI used to render the outage as plain assistant prose,
-  // making infrastructure failures look like model output.
   kind?: "answer" | "error";
   errorCode?: string;
   content: string;
@@ -31,14 +26,7 @@ export interface Conversation {
   id: string;
   title: string;
   updatedAt: number;
-  // Lightweight last-message preview from the backend list endpoint.
-  // Hydrated alongside ``messages`` for current-session chats but
-  // available for backend-restored conversations whose full
-  // ``messages`` array hasn't been loaded yet. Used by both the
-  // sidebar preview and the command-palette substring search -- the
-  // previous version only inspected ``messages[last]``, which is
-  // empty until a conversation is opened, so backend-loaded
-  // conversations were invisible to search.
+  // Preview available before a backend-restored conversation is opened.
   lastMessage?: string;
   messages: ChatMessage[];
 }
@@ -64,9 +52,6 @@ interface ChatState {
       conversation_id: string;
       preview: string;
       last_message: string;
-      // Wall-clock seconds (UNIX) of the most recent commit. Optional
-      // because the backend skips it for conversations without a
-      // recorded timestamp -- the hydrate path falls back to ``Date.now()``.
       updated_at?: number | null;
     }>,
   ) => void;
@@ -157,11 +142,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         .map((bc) => ({
           id: bc.conversation_id,
           title: bc.preview || "Conversation",
-          // ``updated_at`` is UNIX seconds; the store keeps ms. Fall
-          // back to ``Date.now()`` only if the backend didn't record
-          // one (e.g. legacy state pre-rounds-of-fixes) -- previously
-          // we always used ``Date.now()``, which made the palette
-          // bucket every backend-loaded conversation as "Today".
           updatedAt:
             typeof bc.updated_at === "number"
               ? bc.updated_at * 1000

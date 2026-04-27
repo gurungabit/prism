@@ -605,15 +605,7 @@ async def list_sources(
 
 @router.get("/sources/{source_id}")
 async def get_source(source_id: UUID) -> dict[str, Any]:
-    """Source row + document count.
-
-    The inline ``documents`` array used to be returned here too, but
-    the source detail page now uses the paginated
-    ``GET /api/sources/{id}/documents`` endpoint. POC posture is
-    ``./run.sh --clean`` (no migrations, no API consumers in the
-    wild) so there's no back-compat to preserve. ``document_count``
-    stays for the metadata header on the detail page.
-    """
+    """Source row + document count."""
     source_repo = await SourceRepository.create()
     try:
         source = await source_repo.get(source_id)
@@ -633,22 +625,7 @@ async def list_source_documents(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> dict[str, Any]:
-    """Paginated list of documents for a single source.
-
-    Powers the source detail page's infinite-scroll list. The route
-    returns ``(documents, offset, limit, total, has_more)`` so the
-    frontend's ``useInfiniteQuery`` can compute the next page param
-    without a second round trip. The list is the *only* place the
-    documents array is exposed -- ``GET /api/sources/{id}`` returns
-    the source row + ``document_count`` only (the legacy inline
-    ``documents`` field was removed; POC posture is
-    ``./run.sh --clean`` with no API consumers in the wild).
-
-    Bounded ``limit`` (200) keeps a single response from getting
-    pathological if a client tries to use this as a "give me
-    everything" endpoint -- the page size is a soft contract the
-    UI honors via the ``has_more`` flag.
-    """
+    """Paginated document list for a single source."""
     source_repo = await SourceRepository.create()
     try:
         source = await source_repo.get(source_id)
@@ -689,15 +666,6 @@ async def get_source_status(source_id: UUID) -> dict[str, Any]:
 async def update_source(source_id: UUID, body: SourceUpdateBody) -> Source:
     source_repo = await SourceRepository.create()
     try:
-        # Round-11 follow-up: PATCH used to write ``body.config``
-        # straight to Postgres without re-running the path validation
-        # that ``POST /sources`` and ``POST /sources/validate`` use,
-        # so a caller could create a source with a valid path and
-        # then PATCH it to a missing or outside-root path. Re-validate
-        # here for non-GitLab kinds against the *merged* config (the
-        # new fields layered onto the existing row) so partial
-        # updates that omit ``path`` still get checked against the
-        # currently-persisted path.
         if body.config is not None:
             existing = await source_repo.get(source_id)
             if existing is None:
@@ -741,14 +709,8 @@ async def delete_source(source_id: UUID) -> dict[str, str]:
         if source is None:
             raise HTTPException(status_code=404, detail="Source not found")
 
-        # Same abort-pattern as org/team/service delete: clean OpenSearch
-        # *first*, fail loudly if it doesn't work. Pre-fix, OS cleanup
-        # failures were logged-and-ignored and the Postgres row was
-        # dropped anyway -- after which the only handle on those chunks
-        # was gone, leaving them indexed with stale source/org/team/
-        # service metadata. Returning 503 keeps the source row intact
-        # so the user (or a future durable-retry worker) can try again
-        # once OpenSearch is healthy.
+        # Clean OpenSearch first so the source row remains retryable if
+        # chunk cleanup fails.
         _delete_opensearch_for_sources([source.id], scope=f"source={source_id}")
 
         deleted = await source_repo.delete(source_id)

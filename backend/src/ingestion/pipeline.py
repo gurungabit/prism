@@ -149,9 +149,6 @@ class IngestionPipeline:
         await self.source_repo.mark_status(source_id, SourceStatus.SYNCING, last_error=None)
 
         if force:
-            # Remove every existing chunk + registry entry for this source so
-            # the re-ingest re-issues fresh document ids. Without this the
-            # content-hash skip would keep old OpenSearch entries around.
             delete_by_source_id(source_id, self.os_client)
 
         connector = connector_cls(source_config)
@@ -168,22 +165,8 @@ class IngestionPipeline:
         finally:
             await connector.aclose()
 
-        # Per-document parse / index failures, OpenSearch bulk errors,
-        # and tombstone OS-cleanup failures used to be silently masked
-        # because the source flipped to ``ready`` regardless. Surface
-        # them: status -> error, last_error carries a short diagnostic
-        # the UI can show. The source keeps whatever chunks did land
-        # (we don't roll back partial success), but the user knows to
-        # retry.
-        #
-        # ``tombstone_retry_pending`` is the round-14 addition. After
-        # round 13 the tombstone path retains registry rows whose OS
-        # cleanup failed -- the next ingest re-attempts them -- but
-        # nothing surfaced the pending retry to the operator, so a
-        # source could finish "ready" while orphan chunks still
-        # answered queries. Treat it like the other partial-failure
-        # signals: bump status to error and tell the UI how many
-        # cleanups are queued.
+        # Partial failures keep any successful chunks but surface an error
+        # status so the operator knows to retry.
         failed_count = int(stats.get("failed", 0) or 0)
         index_errors = int(stats.get("index_errors", 0) or 0)
         tombstone_pending = int(stats.get("tombstone_retry_pending", 0) or 0)
@@ -463,31 +446,14 @@ class IngestionPipeline:
         doc_refs: list[DocumentRef],
         stats: dict[str, Any],
     ) -> None:
-        """Delete OpenSearch chunks + registry rows for paths missing
-        from the upstream listing.
+        """Remove registry + graph rows whose upstream paths disappeared.
 
-        Runs early in the ingest -- before parse/embed/index -- so an
-        ingest where every doc is unchanged (or every doc fails) still
-        cleans up orphans. Idempotent: a no-op when nothing's stale.
-
-        **Order matters.** Pre-fix this helper deleted registry rows
-        first, then attempted OpenSearch deletion and logged failures.
-        If OS was down during the second step we'd lose the document
-        handle while stale chunks remained searchable forever (codex
-        flagged this every round from 6 to 13). Fixed flow:
-
-        1. Enumerate stale rows from the registry (no mutations).
-        2. Delete each document's OpenSearch chunks. Track which
-           succeeded.
-        3. Drop registry rows *only* for the doc_ids whose OS cleanup
-           succeeded. Failed rows stay in the registry so the next
-           ingest re-attempts the cleanup -- the document handle is
-           the retry mechanism.
-
-        ``stats["tombstoned"]`` counts the registry rows we removed
-        this pass. ``stats["tombstone_retry_pending"]`` counts rows
-        we left for the next ingest because their OS chunks couldn't
-        be deleted.
+        OpenSearch cleanup runs first. Documents whose chunks cannot be
+        deleted have BOTH their ``document_registry`` row AND their
+        ``kg_documents`` row left in place so the next ingest can retry
+        with the same document ids. Successful cleanups drop both rows
+        together in a single Postgres transaction so the source's
+        document footprint stays consistent.
         """
         upstream_paths = {ref.source_path for ref in doc_refs}
         existing_for_source = await self.registry.get_for_source(source.id)
@@ -505,9 +471,6 @@ class IngestionPipeline:
             count=len(stale_rows),
         )
 
-        # Step 1+2: delete OS chunks for each stale doc, tracking
-        # which succeeded. Failures are logged but don't drop the
-        # registry handle -- we'll retry next ingest.
         succeeded_doc_ids: list[str] = []
         retry_pending = 0
         for row in stale_rows:
@@ -526,11 +489,10 @@ class IngestionPipeline:
                     error=str(e)[:200],
                 )
 
-        # Step 3: drop only the registry rows whose OS cleanup
-        # succeeded. ``delete_by_document_ids`` is scoped to
-        # ``source.id`` as a defensive predicate.
         removed = (
-            await self.registry.delete_by_document_ids(source.id, succeeded_doc_ids)
+            await self.registry.delete_by_document_ids_with_graph(
+                source.id, succeeded_doc_ids
+            )
             if succeeded_doc_ids
             else []
         )

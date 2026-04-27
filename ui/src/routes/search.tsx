@@ -11,12 +11,6 @@ import { AlertTriangle, Search } from "lucide-react";
 import { Button } from "../components/shared/Button";
 import { ApiError } from "../lib/api";
 
-// Best-effort decode of the backend's typed-error envelope. ``/api/search``
-// returns ``503 {detail: {error: "retrieval_unavailable", message: "..."}}``
-// when OpenSearch is down. Pre-fix the UI fell through to the generic
-// "Search your knowledge base" empty state, which made an outage look
-// like a clean "no documents matched" -- exactly the empty-vs-broken
-// confusion codex flagged.
 function decodeSearchError(err: unknown): {
   code: string;
   message: string;

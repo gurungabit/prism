@@ -29,20 +29,7 @@ log = get_logger("hybrid_search")
 
 
 class RetrievalUnavailable(Exception):
-    """Retrieval backend is unreachable or failing every request.
-
-    Distinct from "no documents matched" -- this is *infrastructure*
-    failure: OpenSearch is down, the index is missing, embedding load
-    blew up, etc. Routes catch it and return a typed degraded response
-    (503 / structured SSE error event) so the user gets a retryable
-    banner instead of a plausible-looking empty page.
-
-    The previous behavior swallowed every exception and returned ``[]``,
-    which made Analyze proceed with no evidence (and produce a
-    confidently-wrong answer), Search show an empty page, and Chat
-    synthesize from nothing. Surfacing the failure preserves user
-    trust.
-    """
+    """Retrieval backend is unreachable or failing every request."""
 
 
 class HybridSearchEngine:

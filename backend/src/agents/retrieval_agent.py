@@ -53,13 +53,6 @@ async def retrieval_agent(state: dict[str, Any]) -> dict[str, Any]:
             scope_filter=scope_filter,
         )
     except RetrievalUnavailable as e:
-        # Infrastructure failure -- distinct from "found no relevant
-        # docs". Falling through to the partial-results path would let
-        # downstream agents synthesize an answer with zero evidence,
-        # which is exactly the misleading-output case codex flagged.
-        # Mark the agent ``failed`` so the orchestrator surfaces the
-        # outage in the analysis status + SSE stream rather than
-        # producing a confident-but-empty report.
         log.error(
             "retrieval_unavailable",
             analysis_id=analysis_id,

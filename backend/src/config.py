@@ -27,18 +27,9 @@ class Settings(BaseSettings):
     local_source_root: str = "./data"
     allow_unsandboxed_local_sources: bool = False
 
-    # CORS allowed origins as a comma-separated string. Defaults to the
-    # local Vite dev server hosts so a fresh checkout works without
-    # extra config. Production deployments override with their actual
-    # browser origin(s) -- the previous wildcard + credentials default
-    # was unsafe even before auth lands because it sets a default that
-    # later cookie/token flows would silently inherit.
-    #
-    # ``CORSMiddleware`` accepts ``["*"]`` as a sentinel meaning "any";
-    # to keep an escape hatch for local-only experiments, set
-    # ``PRISM_CORS_ORIGINS=*``. The middleware enables credentials only
-    # when origins are *not* ``*`` -- that's the right combo per the
-    # CORS spec.
+    # Comma-separated browser origins allowed to call the API.
+    # ``*`` is a local-experiment escape hatch; credentials are disabled
+    # for that sentinel in main.py.
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     @property

@@ -11,14 +11,6 @@ interface Props {
   onNew: () => void;
 }
 
-// Cmd+K / Ctrl+K command palette for jumping to (and searching) chat
-// conversations. Modeled on the "Search chats and projects" palette
-// in the user-supplied screenshot: a floating modal with a search
-// input and a keyboard-navigable list of matches grouped by recency.
-//
-// Matching is case-insensitive substring on title + last-message
-// preview. ↑/↓ moves the highlight, Enter opens, Esc closes.
-// Clicking outside also closes.
 export function ConversationCommandPalette({
   open,
   onOpenChange,
@@ -31,40 +23,20 @@ export function ConversationCommandPalette({
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Stable IDs so the search input can announce the highlighted
-  // command via ``aria-activedescendant`` and screen readers can
-  // announce the listbox/option semantics. The same combobox-style
-  // ARIA pattern as ``shared/Combobox.tsx`` -- focus stays on the
-  // input while arrow keys move the highlight, and assistive tech
-  // hears the active row label without focus actually leaving the
-  // input.
   const reactId = useId();
   const listboxId = `palette-listbox-${reactId}`;
   const newRowId = `palette-option-${reactId}-new`;
   const conversationOptionId = (id: string) => `palette-option-${reactId}-${id}`;
 
-  // Reset query + focus the input every time the palette opens. Without
-  // the reset, a previous typed query would still be in the box on
-  // re-open, which feels broken when the user is jumping in fresh.
   useEffect(() => {
     if (open) {
       setQuery("");
       setHighlight(0);
-      // Defer focus to after the modal mounts so the focus call hits
-      // the rendered input.
       const t = setTimeout(() => inputRef.current?.focus(), 0);
       return () => clearTimeout(t);
     }
   }, [open]);
 
-  // Sort by recency, then bucket. A chat with no messages keeps its
-  // ``updatedAt`` (set when created) so brand-new empty chats still
-  // surface near the top. Search matches the conversation title +
-  // ``lastMessage`` (hydrated from the backend list endpoint when
-  // available, falling back to ``messages[last]`` for chats created
-  // in the current session). Without ``lastMessage`` the search box
-  // would silently miss any conversation whose messages haven't been
-  // loaded yet -- which is every backend-restored conversation.
   const ranked = useMemo(() => {
     const sorted = [...conversations].sort(
       (a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
@@ -80,20 +52,12 @@ export function ConversationCommandPalette({
     });
   }, [conversations, query]);
 
-  // Keep the highlighted index inside the selectable range. The
-  // command space is ``[0]`` (New conversation) + ``[1..ranked.length]``
-  // (conversations), so the ceiling is ``ranked.length`` -- when the
-  // filter shrinks to zero matches the highlight clamps back to 0
-  // (the New row), which is always selectable.
   useEffect(() => {
     if (highlight > ranked.length) {
       setHighlight(ranked.length);
     }
   }, [ranked.length, highlight]);
 
-  // Close on outside click. The overlay div catches the click and
-  // forwards close only when the click target is the overlay itself
-  // (i.e. not inside the modal card).
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
@@ -128,21 +92,8 @@ export function ConversationCommandPalette({
     return "Older";
   }
 
-  // The selectable command space is "New conversation" at index 0
-  // followed by the ranked conversations at indices 1..N. Modeling it
-  // as a single command array (rather than only conversations) means
-  // ↑↓ and Enter both reach the New row -- previously the New row had
-  // an Enter glyph but pressing Enter only committed
-  // ``ranked[highlight]``, so with zero conversations or no matches
-  // Enter was a no-op even though the visible top command suggested
-  // it would do something.
   const totalCommands = 1 + ranked.length;
 
-  // Build the flat list with bucket headers interleaved between
-  // conversation rows (the "New conversation" row sits above the list
-  // and is rendered separately). ``commandIndex`` is the position in
-  // the unified command array, so the visual highlight uses the same
-  // numbering as the keyboard nav state.
   const flat: Array<
     | { kind: "header"; label: string }
     | { kind: "row"; conv: Conversation; commandIndex: number }
@@ -199,11 +150,6 @@ export function ConversationCommandPalette({
             ref={inputRef}
             type="text"
             placeholder="Search conversations…"
-            // ARIA combobox pattern -- focus stays on the input while
-            // arrow keys move the highlight; ``aria-activedescendant``
-            // names the highlighted row id so screen readers announce
-            // it without focus actually leaving the input. Mirrors the
-            // shared Combobox round-3 wiring.
             role="combobox"
             aria-expanded={true}
             aria-controls={listboxId}

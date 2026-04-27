@@ -110,34 +110,9 @@ class ConnectorRegistry:
 def resolve_local_path(source: SourceConfig) -> Path:
     """Return the on-disk directory a path-based connector should walk.
 
-    Three layers of hardening, all flagged by codex across rounds 10
-    and 11:
-
-    1. **Reject missing ``path``** instead of falling back to ``.``.
-       The previous fallback meant a caller with API access (and we
-       have no auth yet) could create a path-based source with no
-       config at all and have ingest walk the backend's working
-       directory -- including ``.env``, secret stores, and
-       ``backend/src``.
-
-    2. **Constrain the resolved path to the local-source jail**
-       (``settings.local_source_root``, default ``./data``). Anything
-       outside that subtree -- via ``..`` traversal, a symlink, or a
-       literal path -- is rejected. Symlinks are resolved via
-       ``Path.resolve``, so a link inside the root pointing to
-       ``/etc`` fails the boundary check the same as a literal
-       ``/etc`` would.
-
-       Round 10 made this opt-in via a raw env var that nothing in
-       the documented compose / settings actually set, so the default
-       deployment was still vulnerable. Round 11 makes it
-       default-on: ``settings.local_source_root`` is read every call,
-       and the explicit escape hatch is
-       ``settings.allow_unsandboxed_local_sources`` (env:
-       ``PRISM_ALLOW_UNSANDBOXED_LOCAL_SOURCES``). The escape hatch
-       exists so dev workflows that need a one-off directory outside
-       the jail aren't permanently blocked, but it's a deliberate
-       opt-in and shouldn't be set in production.
+    Missing paths are rejected, and resolved paths must stay inside
+    ``settings.local_source_root`` unless the explicit unsandboxed
+    escape hatch is enabled.
     """
 
     raw_path = source.config.get("path")
@@ -150,9 +125,6 @@ def resolve_local_path(source: SourceConfig) -> Path:
     requested = Path(raw_path).expanduser().resolve()
 
     if settings.allow_unsandboxed_local_sources:
-        # Operator deliberately opted out of the jail. Still resolve
-        # + reject missing-path above so the worst behavior (walking
-        # the CWD) is impossible even with the escape hatch.
         return requested
 
     root_value = settings.local_source_root.strip()

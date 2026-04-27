@@ -31,14 +31,6 @@ export function SourceDetailPage() {
   const navigate = useNavigate();
   const confirm = useConfirm();
 
-  // Documents come from a paginated endpoint via ``useInfiniteQuery``.
-  // The flat ``documents`` list below is just ``data.pages.flatMap``; an
-  // ``IntersectionObserver`` further down watches the bottom-of-list
-  // sentinel and calls ``fetchNextPage`` when it scrolls into view.
-  // ``data.pages[0].total`` is the authoritative count for the
-  // "X documents" copy, since the source-detail endpoint's inline
-  // ``documents`` field is truncated and doesn't carry the total
-  // separately.
   const docsQuery = useSourceDocumentsInfinite(sourceId);
   const documents = useMemo(
     () => docsQuery.data?.pages.flatMap((p) => p.documents) ?? [],
@@ -47,10 +39,12 @@ export function SourceDetailPage() {
   const documentsTotal = docsQuery.data?.pages[0]?.total ?? 0;
 
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  // Latch around ``fetchNextPage``. ``isFetchingNextPage`` doesn't flip
+  // synchronously, so a quick double-fire of the IntersectionObserver
+  // (e.g. resize + scroll burst) would otherwise enqueue the same page
+  // twice before TanStack noticed the first request was in flight.
+  const fetchingNextRef = useRef(false);
 
-  // Watch the sentinel and fetch the next page when the user scrolls
-  // it into view. ``rootMargin`` of 200px gives the network call a
-  // head-start so the bottom of the list rarely hits a hard stop.
   useEffect(() => {
     const node = sentinelRef.current;
     if (!node) return;
@@ -58,10 +52,15 @@ export function SourceDetailPage() {
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
-          if (entry.isIntersecting) {
-            docsQuery.fetchNextPage();
-            break;
-          }
+          if (!entry.isIntersecting) continue;
+          if (fetchingNextRef.current) break;
+          fetchingNextRef.current = true;
+          docsQuery
+            .fetchNextPage()
+            .finally(() => {
+              fetchingNextRef.current = false;
+            });
+          break;
         }
       },
       { rootMargin: "200px" },
@@ -227,10 +226,6 @@ export function SourceDetailPage() {
             </span>
           )}
         </div>
-        {/* Three render branches: initial loading, empty list, and the
-            infinite-scroll list itself. ``docsQuery.isLoading`` is the
-            first-page loading state; subsequent page loads use
-            ``isFetchingNextPage`` and render the inline spinner below. */}
         {docsQuery.isLoading ? (
           <div className="space-y-2">
             <Skeleton className="h-9 w-full" />
@@ -244,9 +239,6 @@ export function SourceDetailPage() {
         ) : (
           <div className="space-y-0">
             {documents.map((doc) => {
-              // doc.source_url is populated by the connector (e.g. a GitLab
-              // blob URL). Missing for legacy rows ingested before the
-              // source_url column was added -- fall back to non-clickable.
               const href = typeof doc.source_url === "string" ? doc.source_url : "";
               const rowClasses =
                 "flex items-center justify-between py-2 px-2 -mx-2 rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800/30 border-b border-zinc-200/60 dark:border-zinc-700/30 last:border-0";
@@ -289,12 +281,6 @@ export function SourceDetailPage() {
                 </div>
               );
             })}
-
-            {/* Sentinel for the IntersectionObserver in the effect
-                above. Rendered only while there's another page to
-                fetch -- the observer never re-fires once it
-                disappears. The inline spinner shows during the
-                in-flight fetch so the list doesn't appear stuck. */}
             {docsQuery.hasNextPage && (
               <div
                 ref={sentinelRef}
@@ -307,16 +293,11 @@ export function SourceDetailPage() {
                     Loading more…
                   </>
                 ) : (
-                  // Keeps the sentinel visible (and observable) at
-                  // the bottom of the list when no fetch is yet in
-                  // flight. Empty content keeps the layout calm.
                   <span aria-hidden="true">&nbsp;</span>
                 )}
               </div>
             )}
 
-            {/* Trailing summary so the user knows they've scrolled
-                to the end of an exhaustive list. */}
             {!docsQuery.hasNextPage && documents.length === documentsTotal && documentsTotal > 0 && (
               <p className="text-[11px] text-zinc-400 dark:text-zinc-500 pt-2">
                 End of list — {documentsTotal} document

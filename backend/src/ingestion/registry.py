@@ -193,6 +193,11 @@ class DocumentRegistry:
         ``source_id`` is part of the predicate as a defensive scope
         check: a caller passing doc_ids from a different source can't
         accidentally clobber rows they don't own.
+
+        Prefer ``delete_by_document_ids_with_graph`` from the tombstone
+        path -- it also drops the matching ``kg_documents`` rows in the
+        same transaction so the source's document footprint stays
+        consistent across both tables.
         """
         if not document_ids:
             return []
@@ -207,6 +212,51 @@ class DocumentRegistry:
                 document_ids,
             )
             return [r["document_id"] for r in rows]
+
+    async def delete_by_document_ids_with_graph(
+        self, source_id: UUID, document_ids: list[str]
+    ) -> list[str]:
+        """Drop ``document_registry`` + ``kg_documents`` rows in one txn.
+
+        Tombstone path: after OpenSearch chunks are confirmed gone, both
+        the registry handle and the graph metadata get dropped together
+        so the source's document footprint stays consistent. Without
+        this, ``kg_documents`` rows for tombstoned docs would linger and
+        any view that joins from ``kg_documents`` would surface stale
+        document metadata.
+
+        Failed-OpenSearch-cleanup ids must be withheld by the caller --
+        this method assumes every supplied ``document_id`` is safe to
+        forget. Both DELETEs run inside a single transaction so a
+        partial failure leaves both tables intact for the next-ingest
+        retry.
+
+        ``source_id`` is part of both predicates as a defensive scope
+        check: a stray doc_id from a different source cannot clobber
+        rows it does not own.
+        """
+        if not document_ids:
+            return []
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                rows = await conn.fetch(
+                    """
+                    DELETE FROM document_registry
+                    WHERE source_id = $1 AND document_id = ANY($2::text[])
+                    RETURNING document_id
+                    """,
+                    source_id,
+                    document_ids,
+                )
+                await conn.execute(
+                    """
+                    DELETE FROM kg_documents
+                    WHERE source_id = $1 AND id = ANY($2::text[])
+                    """,
+                    source_id,
+                    document_ids,
+                )
+                return [r["document_id"] for r in rows]
 
     async def get_all(self) -> list[dict]:
         async with self.pool.acquire() as conn:

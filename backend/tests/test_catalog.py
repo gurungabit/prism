@@ -500,3 +500,144 @@ def test_registry_composite_uniqueness_and_delete_by_paths(fresh_dsn: str):
             await orgs.close()
 
     asyncio.run(_run())
+
+
+def test_tombstone_drops_both_registry_and_kg_documents(fresh_dsn: str):
+    """Tombstone-helper drops ``document_registry`` AND ``kg_documents``
+    rows for the supplied ``document_id``s in a single transaction.
+
+    The pipeline only passes doc_ids whose OpenSearch chunks were
+    confirmed gone, so withholding an id (simulating a failed OS
+    cleanup) must leave BOTH rows in place for the next ingest to
+    retry. Without that retention the registry would lose the document
+    handle and orphan chunks would remain searchable forever.
+    """
+    from src.ingestion.knowledge_store import KnowledgeStore
+    from src.ingestion.registry import DocumentRegistry, compute_content_hash
+    from src.models.document import DocumentMetadata, DocumentRef, RawDocument
+
+    async def _run() -> None:
+        orgs = await OrgRepository.create(dsn=fresh_dsn)
+        teams = await TeamRepository.create(dsn=fresh_dsn)
+        services = await ServiceRepository.create(dsn=fresh_dsn)
+        sources = await SourceRepository.create(dsn=fresh_dsn)
+        registry = await DocumentRegistry.create(dsn=fresh_dsn)
+        store = await KnowledgeStore.create(dsn=fresh_dsn)
+        try:
+            org = await orgs.insert("Acme")
+            team = await teams.insert(org.id, "Platform")
+            svc = await services.insert(team.id, "service-a")
+            src = await sources.insert(
+                SourceCreate(
+                    scope=SourceScope.SERVICE,
+                    scope_id=svc.id,
+                    kind=SourceKind.GITLAB,
+                    name="A",
+                    config={"project_path": "org/a"},
+                )
+            )
+
+            doc_keep = str(uuid.uuid4())
+            doc_drop = str(uuid.uuid4())
+
+            # Two ingested documents, both rows in registry + kg_documents.
+            for doc_id, path in [(doc_keep, "keep.md"), (doc_drop, "drop.md")]:
+                await registry.upsert(
+                    document_id=doc_id,
+                    source_platform="gitlab",
+                    source_path=path,
+                    content_hash=compute_content_hash(path),
+                    chunk_count=1,
+                    source_id=src.id,
+                )
+                await store.add_document(
+                    doc_id,
+                    RawDocument(
+                        ref=DocumentRef(
+                            source_platform="gitlab",
+                            source_path=path,
+                        ),
+                        content="x",
+                        metadata=DocumentMetadata(title=path),
+                    ),
+                    source_id=src.id,
+                    org_id=org.id,
+                    team_id=team.id,
+                    service_id=svc.id,
+                )
+
+            # Pipeline contract: only pass doc_ids whose OS chunks are
+            # confirmed gone. Here ``doc_keep`` simulates a failed OS
+            # cleanup (caller withholds it) and ``doc_drop`` is the
+            # success case.
+            removed = await registry.delete_by_document_ids_with_graph(
+                src.id, [doc_drop]
+            )
+            assert removed == [doc_drop]
+
+            async with registry.pool.acquire() as conn:
+                # ``doc_drop`` is gone from BOTH tables.
+                assert (
+                    await conn.fetchrow(
+                        "SELECT 1 FROM document_registry WHERE document_id = $1",
+                        doc_drop,
+                    )
+                    is None
+                )
+                assert (
+                    await conn.fetchrow(
+                        "SELECT 1 FROM kg_documents WHERE id = $1",
+                        doc_drop,
+                    )
+                    is None
+                )
+                # ``doc_keep`` retained in BOTH tables -- next ingest
+                # will retry the OpenSearch cleanup with the same
+                # document_id.
+                assert (
+                    await conn.fetchrow(
+                        "SELECT 1 FROM document_registry WHERE document_id = $1",
+                        doc_keep,
+                    )
+                    is not None
+                )
+                assert (
+                    await conn.fetchrow(
+                        "SELECT 1 FROM kg_documents WHERE id = $1",
+                        doc_keep,
+                    )
+                    is not None
+                )
+
+            # Defensive scope check: passing a stranger source's id with
+            # the surviving doc_id is a no-op.
+            other_src = await sources.insert(
+                SourceCreate(
+                    scope=SourceScope.SERVICE,
+                    scope_id=svc.id,
+                    kind=SourceKind.GITLAB,
+                    name="B",
+                    config={"project_path": "org/b"},
+                )
+            )
+            no_op = await registry.delete_by_document_ids_with_graph(
+                other_src.id, [doc_keep]
+            )
+            assert no_op == []
+            async with registry.pool.acquire() as conn:
+                assert (
+                    await conn.fetchrow(
+                        "SELECT 1 FROM kg_documents WHERE id = $1",
+                        doc_keep,
+                    )
+                    is not None
+                )
+        finally:
+            await store.close()
+            await registry.close()
+            await sources.close()
+            await services.close()
+            await teams.close()
+            await orgs.close()
+
+    asyncio.run(_run())

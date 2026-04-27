@@ -10,10 +10,6 @@ import { ChatMessage } from "../components/chat/ChatMessage";
 import { ChatInput } from "../components/chat/ChatInput";
 import { ScopeSelector, type ScopeValue } from "../components/catalog/ScopeSelector";
 
-// Pixels from the bottom we still consider "at the bottom". Anything
-// greater means the user has scrolled up and the auto-scroll should
-// stop fighting them; the floating "scroll to bottom" button takes
-// over instead.
 const NEAR_BOTTOM_THRESHOLD = 80;
 
 export function ChatConversationPage() {
@@ -23,10 +19,6 @@ export function ChatConversationPage() {
   const deleteMutation = useDeleteConversation();
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Conversation-local retrieval scope. Lives only on the page (not in
-  // the chat store) -- the user can flip scope mid-thread and the next
-  // ``sendMessage`` picks it up. Scope is forwarded to the chat API so
-  // OpenSearch only grounds on chunks inside the selected catalog scope.
   const [scope, setScope] = useState<ScopeValue>({
     org_id: undefined,
     team_ids: [],
@@ -75,10 +67,6 @@ export function ChatConversationPage() {
 
   const activeConversation = chat.conversations.find((c) => c.id === conversationId);
 
-  // ``isNearBottom`` drives both the auto-scroll behavior and the
-  // floating button visibility. Default ``true`` so a fresh open
-  // sticks to the latest message; user scrolling up flips it false
-  // and the auto-scroll-on-token-append stops fighting them.
   const [isNearBottom, setIsNearBottom] = useState(true);
 
   function scrollToBottom(behavior: ScrollBehavior = "smooth") {
@@ -87,10 +75,6 @@ export function ChatConversationPage() {
     node.scrollTo({ top: node.scrollHeight, behavior });
   }
 
-  // Scroll listener: keep ``isNearBottom`` in sync with the user's
-  // scroll position. ``passive`` so the listener can't accidentally
-  // cancel the scroll, and re-bound on conversation change so
-  // navigating between threads doesn't carry stale state.
   useEffect(() => {
     const node = scrollRef.current;
     if (!node) return;
@@ -106,25 +90,12 @@ export function ChatConversationPage() {
     return () => node.removeEventListener("scroll", update);
   }, [conversationId]);
 
-  // Reset bottom-stickiness on conversation change. The route
-  // component doesn't unmount when navigating between
-  // ``/chat/A`` -> ``/chat/B`` (same route shape), so without this
-  // the previous thread's ``isNearBottom = false`` (e.g. after the
-  // user scrolled up) leaks into the new thread, the auto-scroll
-  // effect refuses to jump, and the user lands mid-thread with the
-  // floating button visible instead of at the latest turn. The
-  // ``rAF`` defers the scroll until after the new messages have
-  // rendered into the DOM so ``scrollHeight`` is the real height,
-  // not the previous thread's.
   useEffect(() => {
     setIsNearBottom(true);
     const handle = requestAnimationFrame(() => scrollToBottom("auto"));
     return () => cancelAnimationFrame(handle);
   }, [conversationId]);
 
-  // Auto-scroll on message append / streaming, but only when the user
-  // was already at the bottom. If they've scrolled up to read older
-  // turns, the floating button is the way back -- we don't yank them.
   useEffect(() => {
     if (isNearBottom) {
       scrollToBottom("auto");
@@ -195,12 +166,6 @@ export function ChatConversationPage() {
           </div>
         ) : hasMessages ? (
           <>
-            {/* Wrapping the scroll area in a ``relative`` container so
-                the floating "scroll to bottom" button can position
-                itself against the messages region rather than the
-                whole page. The button only renders while the user is
-                scrolled away from the bottom -- otherwise it would
-                obscure content for no reason. */}
             <div className="relative flex-1 min-h-0">
               <div ref={scrollRef} className="absolute inset-0 overflow-y-auto">
                 <div className="max-w-[42rem] mx-auto px-4 py-6 space-y-1">

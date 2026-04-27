@@ -41,15 +41,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS: parsed from ``settings.cors_origins`` (env: ``PRISM_CORS_ORIGINS``).
-# Default is the local Vite dev hosts so a fresh checkout works without
-# extra config. The previous ``allow_origins=["*"]`` + credentials combo
-# was unsafe even pre-auth -- the wildcard would silently inherit into
-# any future cookie/token browser flow. Per the CORS spec, credentials
-# may only be enabled when origins are *not* the ``*`` sentinel; we
-# downgrade ``allow_credentials`` to False in that branch so the
-# middleware doesn't reject the response. ``PRISM_CORS_ORIGINS=*`` is
-# kept as an explicit local-experiment escape hatch.
 _origins = settings.cors_origin_list
 _wildcard = _origins == ["*"]
 app.add_middleware(

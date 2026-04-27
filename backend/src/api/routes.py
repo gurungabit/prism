@@ -363,15 +363,7 @@ async def get_trace(analysis_id: str):
 
 @router.get("/analyze/{analysis_id}/sources")
 async def get_sources(analysis_id: str):
-    """Return the ``all_sources`` array from a completed analysis.
-
-    Mirrors the persistence fallback in ``get_report``: in-memory
-    ``_analyses`` is only populated for the lifetime of a single
-    process, so after an API restart the report endpoint falls
-    through to ``AnalysisRepository``. Pre-fix, this endpoint
-    didn't, so ``GET /analyze/{id}/report`` succeeded while
-    ``GET /analyze/{id}/sources`` 404'd for the same id.
-    """
+    """Return the ``all_sources`` array from a completed analysis."""
     analysis = _analyses.get(analysis_id)
     if analysis:
         if analysis["status"] == "running":

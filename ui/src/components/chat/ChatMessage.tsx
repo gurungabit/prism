@@ -61,10 +61,7 @@ export function ChatMessage({ message, streaming = false }: ChatMessageProps) {
   const citations = [...(message.citations ?? [])].sort((a, b) => a.index - b.index);
   const citationMap = new Map(citations.map((citation) => [citation.index, citation]));
 
-  // Typed outage events render as an inline banner instead of running
-  // through the markdown pipeline. The previous behavior styled them
-  // as ordinary assistant prose, which made an OpenSearch / LLM outage
-  // look like a real model answer (just with a ``[code]`` prefix).
+  // Typed outage events get a banner, not markdown-rendered assistant prose.
   if (isError) {
     return (
       <div className="group py-3">

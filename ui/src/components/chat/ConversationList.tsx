@@ -120,12 +120,7 @@ export function ConversationList({
             conversations.map((conv) => {
               const isActive = activeId === conv.id;
               const lastMsg = conv.messages[conv.messages.length - 1];
-              // ``lastMessage`` is the backend list-endpoint preview --
-              // a fallback for conversations whose full messages
-              // haven't been hydrated yet (i.e. just rehydrated from
-              // ``loadFromBackend`` and not opened). Without this,
-              // every backend-loaded conversation showed
-              // "Empty conversation" until the user clicked into it.
+              // Backend previews cover conversations not yet hydrated locally.
               const preview =
                 lastMsg?.content.slice(0, 50) ||
                 conv.lastMessage?.slice(0, 50) ||

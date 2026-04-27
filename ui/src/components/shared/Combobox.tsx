@@ -95,15 +95,6 @@ export function Combobox({
     });
   }, [options, query]);
 
-  // Build (group | option) sequence for rendering and a parallel index
-  // map of *just* the selectable option indices for keyboard nav.
-  //
-  // Disabled rows get ``selectableIndex: null`` so they never share an
-  // index with the next enabled row -- without this, a disabled row
-  // and the next enabled row both got the current counter value (the
-  // counter only ticks on enabled rows), which made the visual
-  // highlight light up two siblings at once and disagreed with
-  // ``aria-activedescendant``.
   const flat = useMemo(() => {
     const out: (
       | { kind: "group"; label: string }
@@ -289,19 +280,7 @@ export function Combobox({
                   role="option"
                   aria-selected={isSelected}
                   aria-disabled={row.option.disabled || undefined}
-                  // ``onPointerMove`` rather than ``onMouseEnter``:
-                  // mouseenter fires when an element appears under a
-                  // stationary cursor (e.g. when this dropdown opens),
-                  // which used to bump the keyboard-default highlight
-                  // off whatever the user had selected. pointermove
-                  // only fires on real cursor movement, so the
-                  // keyboard state is preserved until the user
-                  // actively moves the mouse. Same fix the chat
-                  // command palette adopted in round 8.
                   onPointerMove={() => {
-                    // Skip disabled rows -- moving the highlight onto a
-                    // non-selectable target would also desync from
-                    // ``aria-activedescendant``.
                     if (row.selectableIndex !== null) {
                       setHighlight(row.selectableIndex);
                     }

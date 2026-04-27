@@ -39,26 +39,7 @@ import {
   type ValidateSourceBody,
 } from "../lib/api";
 
-// Catalog topology = the org/team/service hierarchy + the dependency
-// graph derived from it. Every mutation that adds, renames, or removes
-// a node ripples through the same set of caches:
-//
-//   - ``orgs`` / ``org``  : org list + detail
-//   - ``teams-for-org`` / ``team`` / ``teams`` : team list + detail
-//     + the legacy graph endpoint
-//   - ``services-for-team`` / ``services-for-org`` / ``service-by-id``:
-//     team-level + org-wide service lists, plus the per-service detail
-//     used by the service detail page
-//   - ``organization-graph``: the React Flow canvas data + the catalog
-//     dep picker on the service detail page; both depend on every
-//     node in the hierarchy
-//
-// Round-3 added this for service mutations only. Codex noticed that
-// org / team mutations still left ``services-for-org`` and
-// ``organization-graph`` stale -- deleting a team cascades all its
-// services in Postgres, but TanStack still served the stale list until
-// the staleTime expired or the user reloaded. This helper closes that
-// loop by invalidating the full topology from any catalog mutation.
+// Org/team/service mutations affect the same derived topology caches.
 function _invalidateCatalogTopology(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ["orgs"] });
   qc.invalidateQueries({ queryKey: ["teams-for-org"] });
@@ -66,6 +47,17 @@ function _invalidateCatalogTopology(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ["services-for-team"] });
   qc.invalidateQueries({ queryKey: ["services-for-org"] });
   qc.invalidateQueries({ queryKey: ["organization-graph"] });
+}
+
+// Cascade deletes in Postgres take every descendant source with them.
+// We don't know which source ids got dropped, so refetch the list query
+// and remove every per-source detail/document cache wholesale -- each
+// is cheap to refetch lazily on the next view.
+function _dropSourceCachesAfterCascade(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ["declared-sources"] });
+  qc.removeQueries({ queryKey: ["declared-source"] });
+  qc.removeQueries({ queryKey: ["declared-source-status"] });
+  qc.removeQueries({ queryKey: ["source-documents"] });
 }
 
 // ---------- orgs ----------
@@ -110,7 +102,18 @@ export function useDeleteOrg() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (orgId: string) => deleteOrg(orgId),
-    onSuccess: () => _invalidateCatalogTopology(qc),
+    onSuccess: (_data, orgId) => {
+      _invalidateCatalogTopology(qc);
+      _dropSourceCachesAfterCascade(qc);
+      // Cascade also pulls every descendant team / service with the
+      // org. We don't have their ids here, so drop the per-entity
+      // caches wholesale.
+      qc.removeQueries({ queryKey: ["org", orgId] });
+      qc.removeQueries({ queryKey: ["teams-for-org", orgId] });
+      qc.removeQueries({ queryKey: ["team"] });
+      qc.removeQueries({ queryKey: ["service-by-id"] });
+      qc.removeQueries({ queryKey: ["service-dependencies"] });
+    },
   });
 }
 
@@ -172,11 +175,17 @@ export function useDeleteTeam() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (teamId: string) => deleteTeam(teamId),
-    onSuccess: () => {
-      // A team delete cascades all of its services in Postgres, so
-      // ``services-for-team``/``-for-org``/``organization-graph`` all
-      // need to refetch -- the topology helper handles that.
+    onSuccess: (_data, teamId) => {
+      // A team delete cascades services + sources in Postgres. The
+      // topology helper handles the derived list queries; the rest
+      // wipes per-entity detail caches that would otherwise display
+      // rows the backend has already deleted.
       _invalidateCatalogTopology(qc);
+      _dropSourceCachesAfterCascade(qc);
+      qc.removeQueries({ queryKey: ["team", teamId] });
+      qc.removeQueries({ queryKey: ["services-for-team", teamId] });
+      qc.removeQueries({ queryKey: ["service-by-id"] });
+      qc.removeQueries({ queryKey: ["service-dependencies"] });
     },
   });
 }
@@ -239,8 +248,11 @@ export function useDeleteService() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (serviceId: string) => deleteService(serviceId),
-    onSuccess: () => {
+    onSuccess: (_data, serviceId) => {
       _invalidateCatalogTopology(qc);
+      _dropSourceCachesAfterCascade(qc);
+      qc.removeQueries({ queryKey: ["service-by-id", serviceId] });
+      qc.removeQueries({ queryKey: ["service-dependencies", serviceId] });
     },
   });
 }
@@ -336,16 +348,6 @@ export function useDeclaredSource(sourceId: string | undefined) {
 
 const SOURCE_DOCUMENTS_PAGE_SIZE = 50;
 
-// Infinite-scroll list of documents for a single source. Each page is
-// fetched against the dedicated paginated endpoint (``GET
-// /api/sources/{id}/documents``); pages flatten into a single
-// ``documents`` array on the consumer side via ``data.pages.flatMap``.
-//
-// ``getNextPageParam`` returns ``undefined`` (TanStack's "stop" signal)
-// when the backend reports ``has_more === false``, otherwise the next
-// offset. Page size is fixed at the client because the UI's sentinel
-// is wired to "load one more page on intersection" -- the operator
-// can adjust by bumping the constant; the backend caps at 200.
 export function useSourceDocumentsInfinite(sourceId: string | undefined) {
   return useInfiniteQuery({
     queryKey: ["source-documents", sourceId],
@@ -381,12 +383,6 @@ export function useSourceStatus(sourceId: string | undefined, enabled = true) {
     const current = query.data?.status;
     if (!current || !sourceId) return;
     const prev = prevStatusRef.current;
-    // Transition from active (syncing/pending) to settled (ready/error)
-    // means ``document_count`` AND the paginated documents list are
-    // now stale on the detail view. Invalidate all three caches so
-    // header + list refetch without a manual reload. ``source-documents``
-    // is the round-19 infinite-query key; it was missing from the
-    // settled-transition fan-out until codex round-20.
     if (
       (prev === "syncing" || prev === "pending") &&
       current !== "syncing" &&
@@ -423,10 +419,6 @@ export function useUpdateSource() {
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["declared-source", vars.sourceId] });
       qc.invalidateQueries({ queryKey: ["declared-sources"] });
-      // A config change can mean a different upstream root / project,
-      // which would re-shape the document set on the next ingest.
-      // Drop the cached pages so the detail page doesn't render
-      // pre-update rows next to a newly-renamed source.
       qc.invalidateQueries({ queryKey: ["source-documents", vars.sourceId] });
     },
   });
@@ -438,9 +430,6 @@ export function useDeleteSource() {
     mutationFn: (sourceId: string) => deleteSource(sourceId),
     onSuccess: (_data, sourceId) => {
       qc.invalidateQueries({ queryKey: ["declared-sources"] });
-      // Source is gone; pages cached against it are dead data. Drop
-      // them outright so any in-flight detail page render that
-      // races the delete doesn't try to use them.
       qc.removeQueries({ queryKey: ["source-documents", sourceId] });
       qc.removeQueries({ queryKey: ["declared-source", sourceId] });
     },
