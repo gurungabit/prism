@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from src.catalog import (
@@ -616,6 +616,45 @@ async def get_source(source_id: UUID) -> dict[str, Any]:
             **source.model_dump(mode="json"),
             "documents": documents,
             "document_count": len(documents),
+        }
+    finally:
+        await source_repo.close()
+
+
+@router.get("/sources/{source_id}/documents")
+async def list_source_documents(
+    source_id: UUID,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    """Paginated list of documents for a single source.
+
+    Powers the source detail page's infinite-scroll list. The route
+    returns ``(documents, offset, limit, total, has_more)`` so the
+    frontend's ``useInfiniteQuery`` can compute the next page param
+    without a second round trip. ``GET /api/sources/{id}`` still
+    returns the full list inline for back-compat callers; new UIs
+    should use this paginated endpoint.
+
+    Bounded ``limit`` (200) keeps a single response from getting
+    pathological if a client tries to use this as a "give me
+    everything" endpoint -- the page size is a soft contract the
+    UI honors via the ``has_more`` flag.
+    """
+    source_repo = await SourceRepository.create()
+    try:
+        source = await source_repo.get(source_id)
+        if source is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        documents, total = await source_repo.list_documents_page(
+            source_id, offset=offset, limit=limit
+        )
+        return {
+            "documents": documents,
+            "offset": offset,
+            "limit": limit,
+            "total": total,
+            "has_more": offset + len(documents) < total,
         }
     finally:
         await source_repo.close()

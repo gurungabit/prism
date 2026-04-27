@@ -461,6 +461,27 @@ export function getDeclaredSource(sourceId: string) {
   );
 }
 
+export interface SourceDocumentsPage {
+  documents: SourceDocument[];
+  offset: number;
+  limit: number;
+  total: number;
+  has_more: boolean;
+}
+
+export function listSourceDocuments(
+  sourceId: string,
+  params?: { offset?: number; limit?: number },
+) {
+  const qs = new URLSearchParams();
+  if (params?.offset !== undefined) qs.set("offset", String(params.offset));
+  if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return request<SourceDocumentsPage>(
+    `/api/sources/${sourceId}/documents${suffix}`,
+  );
+}
+
 export function getSourceStatus(sourceId: string) {
   return request<{
     source_id: string;

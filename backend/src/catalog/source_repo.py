@@ -385,3 +385,46 @@ class SourceRepository(CatalogRepo):
                 source_id,
             )
             return [dict(r) for r in rows]
+
+    async def list_documents_page(
+        self,
+        source_id: UUID,
+        *,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Paginated variant of ``list_documents`` for the source detail
+        page's infinite-scroll list.
+
+        Returns ``(rows, total)`` so the API layer can emit
+        ``has_more = offset + len(rows) < total`` without a second
+        round trip on the client. Same ordering as ``list_documents``
+        (most-recent ingest first) so each page slice is stable
+        across calls within a single ingest cycle.
+
+        ``offset`` and ``limit`` are clamped at the route boundary;
+        this method trusts what it's given and lets Postgres reject
+        anything pathological. ``COUNT(*)`` runs in the same
+        connection as the slice so the snapshot is consistent.
+        """
+        async with self.pool.acquire() as conn:
+            total = await conn.fetchval(
+                "SELECT COUNT(*) FROM document_registry WHERE source_id = $1",
+                source_id,
+            )
+            rows = await conn.fetch(
+                """
+                SELECT dr.document_id, dr.source_path, dr.chunk_count, dr.status,
+                       dr.last_ingested_at, dr.source_platform,
+                       kd.title, kd.source_url
+                FROM document_registry dr
+                LEFT JOIN kg_documents kd ON kd.id = dr.document_id
+                WHERE dr.source_id = $1
+                ORDER BY dr.last_ingested_at DESC NULLS LAST
+                LIMIT $2 OFFSET $3
+                """,
+                source_id,
+                limit,
+                offset,
+            )
+            return [dict(r) for r in rows], int(total or 0)

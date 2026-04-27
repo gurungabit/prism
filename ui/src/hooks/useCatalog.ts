@@ -1,5 +1,10 @@
 import { useEffect, useRef } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import {
   addExternalServiceDependency,
   addServiceDependency,
@@ -22,6 +27,7 @@ import {
   listOrgs,
   listServiceDependencies,
   listServicesForTeam,
+  listSourceDocuments,
   listTeamsForOrg,
   triggerSourceIngest,
   updateOrg,
@@ -324,6 +330,34 @@ export function useDeclaredSource(sourceId: string | undefined) {
     queryKey: ["declared-source", sourceId],
     queryFn: () => getDeclaredSource(sourceId!),
     enabled: !!sourceId,
+    staleTime: 15_000,
+  });
+}
+
+const SOURCE_DOCUMENTS_PAGE_SIZE = 50;
+
+// Infinite-scroll list of documents for a single source. Each page is
+// fetched against the dedicated paginated endpoint (``GET
+// /api/sources/{id}/documents``); pages flatten into a single
+// ``documents`` array on the consumer side via ``data.pages.flatMap``.
+//
+// ``getNextPageParam`` returns ``undefined`` (TanStack's "stop" signal)
+// when the backend reports ``has_more === false``, otherwise the next
+// offset. Page size is fixed at the client because the UI's sentinel
+// is wired to "load one more page on intersection" -- the operator
+// can adjust by bumping the constant; the backend caps at 200.
+export function useSourceDocumentsInfinite(sourceId: string | undefined) {
+  return useInfiniteQuery({
+    queryKey: ["source-documents", sourceId],
+    enabled: !!sourceId,
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      listSourceDocuments(sourceId!, {
+        offset: pageParam,
+        limit: SOURCE_DOCUMENTS_PAGE_SIZE,
+      }),
+    getNextPageParam: (lastPage) =>
+      lastPage.has_more ? lastPage.offset + lastPage.limit : undefined,
     staleTime: 15_000,
   });
 }

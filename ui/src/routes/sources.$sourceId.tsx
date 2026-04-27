@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useRef } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { ArrowLeft, CheckCircle2, CircleAlert, Loader2, Plug, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
 
@@ -9,6 +10,7 @@ import { useConfirm } from "../components/shared/ConfirmDialog";
 import {
   useDeclaredSource,
   useDeleteSource,
+  useSourceDocumentsInfinite,
   useSourceStatus,
   useTriggerIngest,
 } from "../hooks/useCatalog";
@@ -28,6 +30,49 @@ export function SourceDetailPage() {
   const deleteSource = useDeleteSource();
   const navigate = useNavigate();
   const confirm = useConfirm();
+
+  // Documents come from a paginated endpoint via ``useInfiniteQuery``.
+  // The flat ``documents`` list below is just ``data.pages.flatMap``; an
+  // ``IntersectionObserver`` further down watches the bottom-of-list
+  // sentinel and calls ``fetchNextPage`` when it scrolls into view.
+  // ``data.pages[0].total`` is the authoritative count for the
+  // "X documents" copy, since the source-detail endpoint's inline
+  // ``documents`` field is truncated and doesn't carry the total
+  // separately.
+  const docsQuery = useSourceDocumentsInfinite(sourceId);
+  const documents = useMemo(
+    () => docsQuery.data?.pages.flatMap((p) => p.documents) ?? [],
+    [docsQuery.data],
+  );
+  const documentsTotal = docsQuery.data?.pages[0]?.total ?? 0;
+
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+
+  // Watch the sentinel and fetch the next page when the user scrolls
+  // it into view. ``rootMargin`` of 200px gives the network call a
+  // head-start so the bottom of the list rarely hits a hard stop.
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node) return;
+    if (!docsQuery.hasNextPage || docsQuery.isFetchingNextPage) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            docsQuery.fetchNextPage();
+            break;
+          }
+        }
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [
+    docsQuery.hasNextPage,
+    docsQuery.isFetchingNextPage,
+    docsQuery.fetchNextPage,
+  ]);
 
   if (source.isLoading) {
     return (
@@ -172,16 +217,33 @@ export function SourceDetailPage() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
-          Documents
-        </h2>
-        {data.documents.length === 0 ? (
+        <div className="flex items-baseline justify-between">
+          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+            Documents
+          </h2>
+          {documentsTotal > 0 && (
+            <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
+              {documents.length} of {documentsTotal} loaded
+            </span>
+          )}
+        </div>
+        {/* Three render branches: initial loading, empty list, and the
+            infinite-scroll list itself. ``docsQuery.isLoading`` is the
+            first-page loading state; subsequent page loads use
+            ``isFetchingNextPage`` and render the inline spinner below. */}
+        {docsQuery.isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-9 w-full" />
+            <Skeleton className="h-9 w-full" />
+            <Skeleton className="h-9 w-full" />
+          </div>
+        ) : documents.length === 0 ? (
           <p className="text-[12px] text-zinc-400 dark:text-zinc-500">
             No documents yet. Hit "Sync now" to kick off the first ingestion.
           </p>
         ) : (
           <div className="space-y-0">
-            {data.documents.slice(0, 50).map((doc) => {
+            {documents.map((doc) => {
               // doc.source_url is populated by the connector (e.g. a GitLab
               // blob URL). Missing for legacy rows ingested before the
               // source_url column was added -- fall back to non-clickable.
@@ -227,9 +289,38 @@ export function SourceDetailPage() {
                 </div>
               );
             })}
-            {data.documents.length > 50 && (
+
+            {/* Sentinel for the IntersectionObserver in the effect
+                above. Rendered only while there's another page to
+                fetch -- the observer never re-fires once it
+                disappears. The inline spinner shows during the
+                in-flight fetch so the list doesn't appear stuck. */}
+            {docsQuery.hasNextPage && (
+              <div
+                ref={sentinelRef}
+                className="flex items-center justify-center py-3 text-[11px] text-zinc-400 dark:text-zinc-500"
+                aria-hidden={!docsQuery.isFetchingNextPage}
+              >
+                {docsQuery.isFetchingNextPage ? (
+                  <>
+                    <Loader2 className="w-3 h-3 mr-2 animate-spin" />
+                    Loading more…
+                  </>
+                ) : (
+                  // Keeps the sentinel visible (and observable) at
+                  // the bottom of the list when no fetch is yet in
+                  // flight. Empty content keeps the layout calm.
+                  <span aria-hidden="true">&nbsp;</span>
+                )}
+              </div>
+            )}
+
+            {/* Trailing summary so the user knows they've scrolled
+                to the end of an exhaustive list. */}
+            {!docsQuery.hasNextPage && documents.length === documentsTotal && documentsTotal > 0 && (
               <p className="text-[11px] text-zinc-400 dark:text-zinc-500 pt-2">
-                …and {data.documents.length - 50} more.
+                End of list — {documentsTotal} document
+                {documentsTotal === 1 ? "" : "s"}.
               </p>
             )}
           </div>
