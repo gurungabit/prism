@@ -1,9 +1,19 @@
-from pydantic import ConfigDict
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = ConfigDict(env_prefix="PRISM_")
+    # ``env_file`` is resolved relative to the process CWD. Both
+    # ``run.sh`` and the .claude/launch.json ``backend-api`` config set
+    # CWD to ``backend/``, so ``.env`` lands at ``backend/.env`` -- which
+    # is what ``.gitignore`` is already covering. ``extra="ignore"``
+    # keeps the loader from raising when the .env carries non-PRISM
+    # keys (e.g. a developer pasted unrelated env vars).
+    model_config = SettingsConfigDict(
+        env_prefix="PRISM_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     opensearch_url: str = "http://localhost:9200"
     opensearch_index: str = "prism-chunks"

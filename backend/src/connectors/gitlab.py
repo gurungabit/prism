@@ -459,9 +459,14 @@ class GitLabConnector(Connector):
     ) -> tuple[list[dict[str, Any]], bool]:
         """Search projects via ``/projects?search=…``.
 
-        With a token we add ``membership=true`` so callers only see their own
-        projects (otherwise gitlab.com returns the full public firehose).
-        ``simple=true`` trims the payload to just what the picker needs.
+        Browse vs. find: when the user hasn't typed anything we scope to
+        ``membership=true`` so the dropdown doesn't dump every public
+        project on the instance. As soon as they start typing they're
+        explicitly looking for something they may not own (a public docs
+        repo, another team's repo they have read access to, etc.), so
+        drop the membership filter and let GitLab show every visible
+        match. ``simple=true`` trims the payload to just what the
+        picker needs.
 
         Returns ``(projects, has_more)``. ``has_more`` comes from the
         ``X-Next-Page`` header -- GitLab dropped ``X-Total`` on gitlab.com for
@@ -477,7 +482,7 @@ class GitLabConnector(Connector):
         ]
         if query:
             params.append(f"search={quote(query, safe='')}")
-        if self._effective_token:
+        if self._effective_token and not query:
             params.append("membership=true")
         endpoint = f"/projects?{'&'.join(params)}"
 
@@ -502,8 +507,12 @@ class GitLabConnector(Connector):
         """Search groups via ``/groups?search=…``.
 
         Mirrors ``search_projects`` -- with a token we scope to
-        membership-only so the dropdown shows the user's groups rather
-        than every public group on the instance. ``(groups, has_more)``.
+        ``membership=true`` so the dropdown shows the user's groups
+        rather than every public group on the instance. The earlier
+        ``min_access_level=10`` (Guest) variant was wrong: on
+        gitlab.com Guest is the default access level for public
+        groups, so every public group on the instance leaked into
+        the picker.
         """
         params: list[str] = [
             f"per_page={max(1, min(per_page, 100))}",
@@ -511,11 +520,14 @@ class GitLabConnector(Connector):
         ]
         if query:
             params.append(f"search={quote(query, safe='')}")
-        if self._effective_token:
-            # Gitlab.com's group listing respects ``min_access_level`` rather
-            # than ``membership`` -- 10 = Guest, which covers anything the
-            # user can see, which is what the picker wants.
-            params.append("min_access_level=10")
+        # Browse vs. find. ``/groups`` has an asymmetry that ``/projects``
+        # doesn't: an authenticated ``/groups?search=…`` defaults to
+        # "your groups only" -- public groups are excluded unless we set
+        # ``all_available=true``. That makes the empty-query browse case
+        # already correct for membership-only without any flag, but the
+        # search case has to opt in explicitly to broaden.
+        if self._effective_token and query:
+            params.append("all_available=true")
         endpoint = f"/groups?{'&'.join(params)}"
 
         response = self._client.get(endpoint)

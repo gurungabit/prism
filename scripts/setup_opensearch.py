@@ -9,7 +9,7 @@ sys.path.insert(
 )
 
 from src.config import settings
-from src.ingestion.indexer import SEARCH_PIPELINE, INDEX_MAPPING
+from src.ingestion.indexer import INDEX_MAPPING
 
 
 def wait_for_opensearch(client: OpenSearch, max_retries: int = 30) -> None:
@@ -39,15 +39,6 @@ def setup():
     else:
         print(f"Creating index: {index_name}")
         client.indices.create(index=index_name, body=INDEX_MAPPING)
-
-    pipeline_name = "hybrid-search-pipeline"
-    print(f"Creating search pipeline: {pipeline_name}")
-    client.http.put(f"/_search/pipeline/{pipeline_name}", body=SEARCH_PIPELINE)
-
-    client.indices.put_settings(
-        index=index_name,
-        body={"index.search.default_pipeline": pipeline_name},
-    )
 
     print("OpenSearch setup complete")
 
