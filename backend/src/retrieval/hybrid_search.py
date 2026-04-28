@@ -23,6 +23,7 @@ from src.ingestion.embedder import embed_query
 from src.ingestion.indexer import get_opensearch_client
 from src.models.chunk import Chunk, ChunkMetadata
 from src.observability.logging import get_logger
+from src.retrieval.hyde import hypothetical_answer
 from src.retrieval.query_expansion import expand_queries
 
 log = get_logger("hybrid_search")
@@ -45,6 +46,7 @@ class HybridSearchEngine:
         expand: bool = True,
         *,
         scope_filter: dict | None = None,
+        use_hyde: bool = False,
     ) -> list[Chunk]:
         top_k = top_k or settings.retrieval_top_k
 
@@ -60,6 +62,17 @@ class HybridSearchEngine:
             queries = await expand_queries(requirement)
         else:
             queries = [requirement]
+
+        # HyDE: drafted hypothetical answer used as the *vector* probe.
+        # We don't add it to ``queries`` because BM25 over fabricated text
+        # would just inject noise into lexical retrieval; vector space is
+        # where the gain shows up. Falls back to the raw query embedding
+        # when the LLM call fails.
+        vector_probe_text = requirement
+        if use_hyde:
+            hyde_text = await hypothetical_answer(requirement)
+            if hyde_text:
+                vector_probe_text = f"{requirement}\n\n{hyde_text}"
 
         # Merge the caller's ``filters`` with the declared-scope filter. The
         # scope filter lives on its own because it's the one that uses
@@ -91,7 +104,7 @@ class HybridSearchEngine:
 
         attempts += 1
         try:
-            query_embedding = embed_query(requirement)
+            query_embedding = embed_query(vector_probe_text)
             vector_results = self._vector_search(
                 query_embedding, top_k, merged_filters, scope_filter
             )
@@ -133,11 +146,31 @@ class HybridSearchEngine:
         filters: dict | None = None,
         scope_filter: dict | None = None,
     ) -> list[Chunk]:
+        # ``best_fields`` over (content, section_heading, document_title)
+        # with descending boosts. The heading boost is what fixes the
+        # recall failure on queries whose vocabulary aligns with the
+        # heading (e.g. user asks about "external services", README
+        # section is titled "External Service Integrations" but its body
+        # is just bullet names). ``cross_fields`` was tempting but it
+        # requires the same analyzer across fields and behaves poorly on
+        # short keyword-y headings -- ``best_fields`` is more forgiving.
         body: dict = {
             "size": top_k,
             "query": {
                 "bool": {
-                    "must": [{"match": {"content": {"query": query_text}}}],
+                    "must": [
+                        {
+                            "multi_match": {
+                                "query": query_text,
+                                "type": "best_fields",
+                                "fields": [
+                                    "section_heading^3",
+                                    "document_title^2",
+                                    "content^1",
+                                ],
+                            }
+                        }
+                    ],
                 }
             },
         }
@@ -160,8 +193,10 @@ class HybridSearchEngine:
         top_k: int,
         filters: dict | None = None,
         scope_filter: dict | None = None,
-        min_score: float = 0.6,
+        min_score: float | None = None,
     ) -> list[Chunk]:
+        if min_score is None:
+            min_score = settings.vector_min_score
         body: dict = {
             "size": top_k,
             "query": {
@@ -198,35 +233,6 @@ class HybridSearchEngine:
                     min_score=min_score,
                 )
         return chunks
-
-    def _hybrid_search_native(
-        self,
-        query_text: str,
-        query_vector: list[float],
-        top_k: int,
-    ) -> list[Chunk]:
-        body = {
-            "size": top_k,
-            "query": {
-                "hybrid": {
-                    "queries": [
-                        {"match": {"content": {"query": query_text}}},
-                        {"knn": {"embedding": {"vector": query_vector, "k": top_k}}},
-                    ]
-                }
-            },
-        }
-
-        try:
-            response = self.client.search(
-                index=self.index_name,
-                body=body,
-                params={"search_pipeline": "hybrid-search-pipeline"},
-            )
-            return self._parse_hits(response)
-        except Exception as e:
-            log.warning("native_hybrid_search_failed_falling_back", error=str(e))
-            return []
 
     def _rrf_merge(self, result_lists: list[list[Chunk]], k: int = 60) -> list[Chunk]:
         chunk_map: dict[str, Chunk] = {}

@@ -140,12 +140,43 @@ flowchart TD
     CHECK -->|yes| COMPARE{Hash changed?}
     COMPARE -->|no| SKIP[skip unchanged]
     COMPARE -->|yes| UPDATE[delete old chunks<br/>from OpenSearch]
-    NEW --> PROCESS[parse · chunk · stamp scope · embed · index]
+    NEW --> PROCESS[parse · chunk · stamp scope · summarize · embed · index]
     UPDATE --> PROCESS
     PROCESS --> REG[upsert document_registry with source_id]
     SKIP --> DONE[done]
     REG --> DONE
 ```
+
+### Chunk content shape
+
+Section chunks are not raw doc text — each chunk's `content` is prefixed
+with a `[Document Title > Section Heading]` context line before
+embedding and BM25 indexing. The prefix exists for two reasons:
+
+1. The embedding model now sees the heading text, so a query whose
+   vocabulary aligns with the heading (`"external services"`) matches
+   the chunk even when the body is just a bullet list of names.
+2. BM25 sees the heading words inline, complementing the multi-field
+   match that boosts the standalone `section_heading` field.
+
+Identical title/heading (common in single-H1 READMEs) deduplicates so
+the prefix never reads `[X > X]`.
+
+### Per-document summary chunks
+
+When `PRISM_ENABLE_DOCUMENT_SUMMARIES=true` (default), each ingested
+document gets one extra synthetic chunk: an LLM-generated abstract
+that names the document's headline facts (services it calls,
+dependencies, owners, integrations) using proper nouns verbatim.
+Summary chunks compete with section chunks at retrieval time. They
+are scope-stamped with the same `org_id`/`team_id`/`service_id` as
+their sibling section chunks. The summarizer wraps document content
+in `<<<DOC ... <<<END_DOC>>>` fences and applies the
+`UNTRUSTED_DOCS_RULE`, neutralizing fence markers smuggled in by the
+body so a malicious doc can't prompt-inject the summary.
+
+A summarizer LLM failure is non-fatal — the document still indexes
+via its section chunks, just without a summary chunk.
 
 The **tombstone phase** runs *before* parsing so an ingest where every
 document is unchanged or every parse fails still cleans up deletions on
@@ -204,34 +235,88 @@ total_chunks
 
 ## Retrieval Pipeline
 
-PRISM uses the same hybrid retrieval engine for:
+PRISM uses the same `HybridSearchEngine` underneath every surface, but
+the chat path layers extra steps for recall (HyDE, agentic refine)
+that analyze doesn't need:
 
-- analysis retrieval (`retrieval_agent`)
-- manual search (`/api/search`)
-- chat grounding (`/api/chat`)
+- analysis retrieval (`retrieval_agent`) — expansion + hybrid + agent-typed rerank
+- manual search (`/api/search`) — single-shot hybrid
+- chat grounding (`/api/chat`) — expansion + HyDE + hybrid + generic rerank + bounded refine
 - chat source preview fallback
 
 ```mermaid
 graph LR
-    REQ["Query / Requirement Brief"] --> QE["Query Expansion"]
-    QE --> BM25["BM25 Retrieval"]
-    QE --> VEC["Vector Retrieval"]
+    REQ["Query / Requirement Brief"] --> QE["Query Expansion<br/>(5 LLM variants)"]
+    REQ --> HYDE["HyDE<br/>(chat only)"]
+    QE --> BM25["BM25 Retrieval<br/>multi-field<br/>section_heading^3,<br/>document_title^2,<br/>content^1"]
+    HYDE --> VEC["Vector Retrieval<br/>(KNN)"]
+    QE --> VEC
     BM25 --> RRF["RRF Fusion"]
     VEC --> RRF
     SCOPE["Scope Filter<br/>(org_id, team_ids, service_ids)"] --> BM25
     SCOPE --> VEC
     RRF --> DEDUP["Deduplicate"]
     DEDUP --> TOP["Top-K Candidates"]
-    TOP --> RR["Task-specific Rerank"]
+    TOP --> RR["Cross-encoder Rerank"]
+    RR --> REFINE{"Weak first pass?<br/>(chat only)"}
+    REFINE -->|yes| REWRITE["LLM rewrite<br/>+ one re-search"]
+    REFINE -->|no| OUT["Output"]
+    REWRITE --> OUT
 
     classDef input fill:#0f766e,color:#fff,stroke:none;
     classDef retrieval fill:#7c3aed,color:#fff,stroke:none;
     classDef process fill:#f59e0b,color:#fff,stroke:none;
 
     class REQ,SCOPE input;
-    class QE,BM25,VEC,RRF retrieval;
-    class DEDUP,TOP,RR process;
+    class QE,HYDE,BM25,VEC,RRF retrieval;
+    class DEDUP,TOP,RR,REFINE,REWRITE process;
 ```
+
+### Vector probe and HyDE
+
+The vector probe is `embed_query(requirement)` by default. When
+`use_hyde=True` is passed (the chat surface flips this on), the LLM
+drafts a 2-4 sentence hypothetical answer in documentation voice and
+the probe becomes `embed_query(requirement + "\n\n" + hypothetical)`.
+A failed HyDE call falls back to the raw query embedding without
+raising — never blocks retrieval.
+
+BM25 still uses the *real* expanded queries; HyDE text is intentionally
+not BM25-fed because fabricated tokens would just inject noise into
+lexical retrieval.
+
+### BGE asymmetric encoding
+
+The default embedding model is `BAAI/bge-base-en-v1.5` (768-dim).
+BGE / E5 family models are trained with asymmetric query/passage
+encoding: queries get a short instruction prefix
+(`"Represent this sentence for searching relevant passages: "` for
+BGE, `"query: "` for E5), passages don't. `embed_query()` honors this
+when the configured model name matches a known family; passages
+indexed via `embed_chunks()` go through unmodified.
+
+Switching embedding models requires a wipe and re-ingest because the
+OpenSearch knn_vector mapping uses `PRISM_EMBEDDING_DIMENSION` at
+index-creation time; `embedder.get_model()` raises
+`EmbeddingDimensionMismatch` at startup if the loaded model and the
+configured dimension disagree.
+
+### Agentic refine (chat only)
+
+After the primary retrieval (expansion + HyDE + hybrid + rerank), the
+chat path peeks at result quality. If the top score is below
+`PRISM_CHAT_REFINE_MAX_SCORE` or there are fewer than
+`PRISM_CHAT_REFINE_MIN_CHUNKS` results, the LLM is asked to rewrite
+the query into a search-friendlier form ("what does X call" → "X
+external integrations") and one more retrieval pass runs. Results
+are merged (refined first, deduped), then reranked against the
+**original** query. Bounded to a single retry per turn so a
+degenerate query can't spiral.
+
+A reranker exception inside the chat path or the refiner falls back
+to the un-reranked merged list — chat never aborts the SSE stream
+for a rerank failure; only `RetrievalUnavailable` (full search
+outage) is a hard stop.
 
 ### Scope filter semantics
 

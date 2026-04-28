@@ -56,16 +56,68 @@ class Settings(BaseSettings):
     # to disable the filter and walk every project.
     gitlab_group_active_window_days: int = 30
 
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
-    embedding_dimension: int = 384
+    # Embedding model. ``BAAI/bge-base-en-v1.5`` (768 dim) is the default
+    # because it materially outperforms MiniLM on terminology-mismatch
+    # retrieval (e.g. README says "Integrations", user asks about
+    # "calls"). Switching models means re-indexing -- the OpenSearch
+    # mapping uses ``embedding_dimension`` at index-creation time, so an
+    # existing index with a different dimension will reject inserts.
+    # Wipe with ``./run.sh --clean`` and re-ingest after changing.
+    embedding_model: str = "BAAI/bge-base-en-v1.5"
+    embedding_dimension: int = 768
+    # BGE / E5 family models are trained with an asymmetric query/passage
+    # convention: queries get a short instruction prefix, passages don't.
+    # ``embed_query`` honors this when the model name matches; passages
+    # are embedded raw. Override only if you swap to a model that wants
+    # a different prefix (e.g. ``query: `` for E5).
+    embedding_query_prefix: str = (
+        "Represent this sentence for searching relevant passages: "
+    )
 
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
     chunk_size_tokens: int = 500
     chunk_overlap_tokens: int = 50
+    # Floor below which a vector-search hit is dropped. Set to 0.0 to
+    # disable -- the RRF merge already discounts low-rank vector hits,
+    # and a hard floor calibrated for one model (the old MiniLM cutoff
+    # was 0.6) silently nukes legitimate matches under a different
+    # embedding family. Disabled by default; tune per-deploy if needed.
+    vector_min_score: float = 0.0
 
     retrieval_top_k: int = 30
     rerank_top_k: int = 15
+
+    # Chat-surface retrieval knobs. Distinct from the analyze-surface
+    # ``retrieval_top_k`` because chat used to hard-code ``top_k=10`` /
+    # ``expand=False`` in the route -- which made chat noticeably worse
+    # than analyze on the same query. The defaults here mirror analyze's
+    # better recall, then the reranker trims back down to a tight prompt
+    # context.
+    chat_retrieval_top_k: int = 30
+    chat_query_expansion: bool = True
+    chat_rerank: bool = True
+    chat_rerank_top_k: int = 8
+    chat_prompt_chunks: int = 6
+    chat_chunk_chars: int = 2500
+    chat_use_hyde: bool = True
+    # Agentic refinement: if the first pass returns thin / low-confidence
+    # results, reformulate the query and search once more. Bounded to a
+    # single retry per turn so a degenerate query can't spiral.
+    chat_agentic_refine: bool = True
+    chat_refine_max_score: float = 0.05
+    chat_refine_min_chunks: int = 3
+
+    # HyDE settings (used when ``use_hyde=True`` is passed to search()).
+    hyde_max_chars: int = 600
+
+    # Per-document summary chunks. When enabled, ingestion emits one
+    # extra synthetic chunk per document containing an LLM-generated
+    # abstract over the whole doc. These compete with section chunks at
+    # retrieval time and dramatically improve recall for "what does
+    # X do / call / depend on" style queries.
+    enable_document_summaries: bool = True
+    document_summary_max_input_chars: int = 12000
 
     max_retrieval_rounds: int = 2
 

@@ -96,22 +96,6 @@ INDEX_MAPPING = {
     },
 }
 
-SEARCH_PIPELINE = {
-    "description": "Hybrid search with score normalization",
-    "phase_results_processors": [
-        {
-            "normalization-processor": {
-                "normalization": {"technique": "min_max"},
-                "combination": {
-                    "technique": "arithmetic_mean",
-                    "parameters": {"weights": [0.4, 0.6]},
-                },
-            }
-        }
-    ],
-}
-
-
 def setup_index(client: OpenSearch | None = None) -> None:
     client = client or get_opensearch_client()
     index_name = settings.opensearch_index
@@ -148,15 +132,6 @@ def setup_index(client: OpenSearch | None = None) -> None:
             except Exception as e:  # noqa: BLE001
                 log.warning("index_mapping_upgrade_failed", error=str(e)[:200])
 
-        pipeline_name = "hybrid-search-pipeline"
-        client.http.put(f"/_search/pipeline/{pipeline_name}", body=SEARCH_PIPELINE)
-        log.info("search_pipeline_created", pipeline=pipeline_name)
-
-        client.indices.put_settings(
-            index=index_name,
-            body={"index.search.default_pipeline": pipeline_name},
-        )
-        log.info("default_pipeline_set", index=index_name, pipeline=pipeline_name)
         _configured_indexes.add(config_key)
 
 

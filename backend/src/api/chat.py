@@ -10,6 +10,8 @@ from src.config import settings
 from src.llm_client import get_llm_client
 from src.observability.logging import get_logger
 from src.retrieval.hybrid_search import HybridSearchEngine, RetrievalUnavailable
+from src.retrieval.refiner import maybe_refine_retrieval
+from src.retrieval.reranker import rerank_chunks
 
 log = get_logger("chat")
 
@@ -122,8 +124,36 @@ async def chat_stream(
     try:
         chunks = await engine.search(
             requirement=message,
-            top_k=10,
-            expand=False,
+            top_k=settings.chat_retrieval_top_k,
+            expand=settings.chat_query_expansion,
+            scope_filter=scope_filter,
+            use_hyde=settings.chat_use_hyde,
+        )
+        if settings.chat_rerank and chunks:
+            # Rerank failures (cross-encoder model not loaded, OOM, the
+            # ``predict`` call raising) must NOT abort the chat stream --
+            # the hybrid results are already usable and dropping them
+            # because rerank failed is strictly worse than skipping the
+            # rerank step. The chat surface only treats
+            # ``RetrievalUnavailable`` (full search outage) as a hard
+            # stop; everything else degrades to "best-effort
+            # un-reranked".
+            try:
+                chunks = rerank_chunks(
+                    chunks,
+                    requirement=message,
+                    top_k=settings.chat_rerank_top_k,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning(
+                    "chat_rerank_failed_using_hybrid_results",
+                    error=str(e)[:200],
+                )
+                chunks = chunks[: settings.chat_rerank_top_k]
+        chunks = await maybe_refine_retrieval(
+            engine,
+            chunks=chunks,
+            original_query=message,
             scope_filter=scope_filter,
         )
     except RetrievalUnavailable:
@@ -151,8 +181,11 @@ async def chat_stream(
         yield {"event": "done", "data": json.dumps({"conversation_id": conversation_id})}
         return
 
-    capped_chunks = list(chunks[:8])
-    context = format_chunks_for_prompt(capped_chunks, max_chars_per_chunk=500)
+    capped_chunks = list(chunks[: settings.chat_prompt_chunks])
+    context = format_chunks_for_prompt(
+        capped_chunks,
+        max_chars_per_chunk=settings.chat_chunk_chars,
+    )
     citations = [
         {
             "index": i + 1,
@@ -195,11 +228,15 @@ docs being off-topic.
 RULES:
 - Just answer the user's actual question. Never ask "would you like me to
   X" when the user has clearly already asked for X.
+- When the question is "what / which / list" and the docs name specific
+  items (services, teams, endpoints, dependencies), enumerate them all --
+  don't summarize a list as "several services". Cite [Source N] beside
+  the list.
 - Cite [Source N] only when the retrieved docs directly support the claim.
 - If the user explicitly says "don't use the docs" or "general knowledge",
   skip citations entirely and answer straight from general knowledge.
-- Be concise and direct. No meta-commentary about what's in the docs when
-  the user didn't ask about the docs.
+- Be concise and direct. Skip meta-commentary about the docs themselves
+  ("the documentation says...", "based on the retrieved chunks...").
 
 {UNTRUSTED_DOCS_RULE}"""
 

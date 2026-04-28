@@ -241,8 +241,9 @@ runtime notes.
 | Knowledge Store | PostgreSQL relational tables (declared catalog + `kg_*` + registry) |
 | Persistence | PostgreSQL 16 |
 | Agent Framework | LangGraph with PostgreSQL checkpointing |
-| Embeddings | `sentence-transformers/all-MiniLM-L6-v2` |
-| Re-ranking | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
+| Embeddings | `BAAI/bge-base-en-v1.5` (768d, asymmetric query/passage encoding) |
+| Re-ranking | `cross-encoder/ms-marco-MiniLM-L-6-v2` (chat + analyze paths) |
+| Retrieval | Hybrid BM25 (multi-field, heading-boosted) + KNN, RRF-merged, query expansion + HyDE on chat |
 | Backend | FastAPI + Python 3.12 (asyncpg, httpx) |
 | Frontend | React 18.3 + TypeScript + Tailwind CSS + TanStack Router |
 | Export | jsPDF + jspdf-autotable |

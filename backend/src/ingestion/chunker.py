@@ -9,6 +9,7 @@ from src.ingestion.parser import detect_doc_type
 
 
 HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
+LIST_ITEM_PATTERN = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+", re.MULTILINE)
 APPROX_CHARS_PER_TOKEN = 4
 DEFAULT_CHUNK_TOKENS = 500
 DEFAULT_OVERLAP_TOKENS = 50
@@ -29,6 +30,8 @@ def chunk_document(
     chunk_size_chars = chunk_size_tokens * APPROX_CHARS_PER_TOKEN
     overlap_chars = overlap_tokens * APPROX_CHARS_PER_TOKEN
 
+    document_title = raw_doc.metadata.title or ""
+
     all_chunks: list[Chunk] = []
 
     for section_heading, section_content in sections:
@@ -36,16 +39,31 @@ def chunk_document(
         section_chunks = _merge_paragraphs_into_chunks(paragraphs, chunk_size_chars, overlap_chars)
 
         for chunk_text in section_chunks:
-            if not chunk_text.strip():
+            stripped = chunk_text.strip()
+            if not stripped:
                 continue
 
-            team_hint, service_hint = _extract_hints(chunk_text, raw_doc.ref.source_path)
+            # Prepend a short "context line" so the embedding model and
+            # BM25 both see the document title and section heading. The
+            # original section_heading and document_title also live on
+            # the chunk metadata for filtering / display, but inlining
+            # them in ``content`` is what fixes the recall failure on
+            # queries whose vocabulary matches the heading rather than
+            # the body (e.g. "external services" -> the section is
+            # titled "External Service Integrations" but its body just
+            # bullet-lists names).
+            context_line = _build_context_line(document_title, section_heading)
+            content_with_context = (
+                f"{context_line}\n\n{stripped}" if context_line else stripped
+            )
+
+            team_hint, service_hint = _extract_hints(content_with_context, raw_doc.ref.source_path)
 
             all_chunks.append(
                 Chunk(
                     chunk_id=str(uuid.uuid4()),
                     document_id=document_id,
-                    content=chunk_text.strip(),
+                    content=content_with_context,
                     metadata=ChunkMetadata(
                         source_platform=raw_doc.ref.source_platform,
                         source_path=raw_doc.ref.source_path,
@@ -66,6 +84,26 @@ def chunk_document(
         chunk.metadata.total_chunks = len(all_chunks)
 
     return all_chunks
+
+
+def _build_context_line(document_title: str, section_heading: str) -> str:
+    parts: list[str] = []
+    seen: set[str] = set()
+    for part in (document_title, section_heading):
+        cleaned = (part or "").strip()
+        if not cleaned:
+            continue
+        # Deduplicate when the doc title and the H1 are the same string
+        # (very common in README-style docs); a "Title > Title" prefix
+        # is just noise.
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        parts.append(cleaned)
+    if not parts:
+        return ""
+    return f"[{' > '.join(parts)}]"
 
 
 def _split_by_headings(text: str) -> list[tuple[str, str]]:
@@ -143,6 +181,15 @@ def _merge_paragraphs_into_chunks(
 def _split_long_paragraph(text: str, chunk_size: int, overlap: int) -> list[str]:
     if chunk_size <= 0 or not text:
         return [text] if text else []
+
+    # Bullet / numbered lists have no sentence-ending periods, so the
+    # generic ``rfind(". ")`` splitter would slice mid-line. When the
+    # paragraph is recognizably a list, split at item boundaries
+    # instead -- keeps each bullet whole, which is what RAG needs for
+    # "list of X" questions.
+    if _is_list_block(text):
+        return _split_list_block(text, chunk_size, overlap)
+
     chunks: list[str] = []
     start = 0
     n = len(text)
@@ -160,6 +207,61 @@ def _split_long_paragraph(text: str, chunk_size: int, overlap: int) -> list[str]
             break
         next_start = end - overlap if overlap > 0 else end
         start = max(start + min_step, next_start)
+    return chunks
+
+
+def _is_list_block(text: str) -> bool:
+    """Heuristic: a paragraph qualifies as a list block when at least
+    half its non-empty lines start with a markdown bullet or numbered
+    list marker. The 0.5 threshold tolerates list intros like "Key
+    components:" sharing a paragraph with the items below.
+    """
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    list_lines = sum(1 for ln in lines if LIST_ITEM_PATTERN.match(ln))
+    return list_lines * 2 >= len(lines)
+
+
+def _split_list_block(text: str, chunk_size: int, overlap: int) -> list[str]:
+    """Split a list block at item boundaries. Items themselves are kept
+    whole; the splitter only inserts a break when adding the next item
+    would push the chunk past ``chunk_size``.
+    """
+    items: list[str] = []
+    current: list[str] = []
+    for line in text.splitlines():
+        if LIST_ITEM_PATTERN.match(line) and current:
+            items.append("\n".join(current))
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        items.append("\n".join(current))
+
+    if not items:
+        return [text]
+
+    chunks: list[str] = []
+    bucket: list[str] = []
+    bucket_len = 0
+    for item in items:
+        item_len = len(item)
+        if bucket and bucket_len + item_len + 1 > chunk_size:
+            chunks.append("\n".join(bucket))
+            if overlap > 0 and bucket:
+                tail = bucket[-1]
+                bucket = [tail]
+                bucket_len = len(tail)
+            else:
+                bucket = []
+                bucket_len = 0
+        bucket.append(item)
+        bucket_len += item_len + 1
+
+    if bucket:
+        chunks.append("\n".join(bucket))
+
     return chunks
 
 

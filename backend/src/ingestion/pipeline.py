@@ -50,6 +50,7 @@ from src.ingestion.indexer import (
 from src.ingestion.knowledge_store import KnowledgeStore
 from src.ingestion.parser import parse_document
 from src.ingestion.registry import DocumentRegistry, compute_content_hash
+from src.ingestion.summarizer import attach_summary_chunks
 from src.models.chunk import Chunk
 from src.models.document import DocumentRef, RawDocument
 from src.observability.logging import get_logger
@@ -375,6 +376,28 @@ class IngestionPipeline:
         if not prepared:
             log.info("no_documents_to_index", source=source.name)
             return stats
+
+        # Phase 1.5 -- emit one LLM-summary chunk per document. Runs
+        # before embed so the summaries flow through the same batch
+        # and don't need a second OpenSearch round-trip. Best-effort:
+        # if the LLM is down, the document still gets indexed via its
+        # section chunks alone.
+        #
+        # Re-stamp scope after the summary attaches: section chunks were
+        # stamped at chunk time (line above), but summary chunks land
+        # later from the summarizer and would otherwise be missing
+        # ``org_id`` / ``team_id`` / ``service_id``. Scoped retrieval
+        # uses ``org_id`` as a hard term filter, so an unstamped summary
+        # chunk would be invisible to every scoped chat / analyze run.
+        summary_count = await attach_summary_chunks(prepared)
+        if summary_count:
+            for doc in prepared:
+                self._stamp_scope_onto_chunks(doc.chunks, scope)
+            log.info(
+                "summary_chunks_attached",
+                source=source.name,
+                count=summary_count,
+            )
 
         log.info("phase_2_embed", source=source.name, documents=len(prepared))
         all_chunks: list[Chunk] = []

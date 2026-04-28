@@ -46,6 +46,35 @@ def rerank_for_agent(
     else:
         candidates = chunks
 
+    return _rerank(candidates, requirement, top_k, label=f"agent:{agent_type}")
+
+
+def rerank_chunks(
+    chunks: list[Chunk],
+    requirement: str,
+    top_k: int | None = None,
+) -> list[Chunk]:
+    """Doc-type-agnostic rerank for the chat surface.
+
+    The agent reranker filters by ``DOC_TYPE_AGENT_RELEVANCE`` first --
+    that's right for analysis pipelines that know what kind of evidence
+    each agent needs (a risk agent shouldn't see catalog docs). Chat
+    has no such prior; a question can land on any doc type. Skip the
+    type filter and let the cross-encoder rank purely on relevance.
+    """
+    top_k = top_k or settings.rerank_top_k
+    if not chunks:
+        return []
+    return _rerank(chunks, requirement, top_k, label="chat")
+
+
+def _rerank(
+    candidates: list[Chunk],
+    requirement: str,
+    top_k: int,
+    *,
+    label: str,
+) -> list[Chunk]:
     reranker = get_reranker()
     pairs = [(requirement, c.content) for c in candidates]
     scores = reranker.predict(pairs)
@@ -57,5 +86,5 @@ def rerank_for_agent(
         chunk.score = float(score)
         result.append(chunk)
 
-    log.info("reranked", agent=agent_type, input=len(candidates), output=len(result))
+    log.info("reranked", label=label, input=len(candidates), output=len(result))
     return result

@@ -84,12 +84,27 @@ Backend settings use the `PRISM_` prefix.
 | `PRISM_GITLAB_REQUEST_TIMEOUT_SECONDS` | `30.0` | per-request timeout for the GitLab connector |
 | `PRISM_GITLAB_MAX_PROJECTS_PER_SOURCE` | `200` | safety cap on group-scoped sources |
 | `PRISM_GITLAB_GROUP_ACTIVE_WINDOW_DAYS` | `30` | when ingesting a whole group, skip projects with no activity in the last N days. `0` disables the filter. Single-project ingest is unaffected. |
-| `PRISM_EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | embedding model |
-| `PRISM_EMBEDDING_DIMENSION` | `384` | vector dimension |
-| `PRISM_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | reranker |
+| `PRISM_EMBEDDING_MODEL` | `BAAI/bge-base-en-v1.5` | embedding model. Switching requires `PRISM_EMBEDDING_DIMENSION` to match and a wipe of OpenSearch (the kNN mapping is fixed at index-creation time). |
+| `PRISM_EMBEDDING_DIMENSION` | `768` | vector dimension. `get_model()` raises at startup if this doesn't match the loaded model. |
+| `PRISM_EMBEDDING_QUERY_PREFIX` | `Represent this sentence for searching relevant passages: ` | asymmetric query prefix. Auto-applied for BGE family; E5 family swaps to `query: `; non-matching models receive no prefix. |
+| `PRISM_VECTOR_MIN_SCORE` | `0.0` | floor below which a kNN hit is dropped before RRF merge. The old hard-coded `0.6` was MiniLM-calibrated; with BGE it would silently nuke real matches. |
+| `PRISM_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | reranker (used by analyze and chat paths). |
 | `PRISM_CHUNK_SIZE_TOKENS` | `500` | target chunk size |
-| `PRISM_RETRIEVAL_TOP_K` | `30` | default retrieval window |
-| `PRISM_RERANK_TOP_K` | `15` | post-rerank chunk count |
+| `PRISM_RETRIEVAL_TOP_K` | `30` | default retrieval window (analyze) |
+| `PRISM_RERANK_TOP_K` | `15` | post-rerank chunk count (analyze) |
+| `PRISM_CHAT_RETRIEVAL_TOP_K` | `30` | chat-side retrieval window (was hard-coded 10 pre-overhaul) |
+| `PRISM_CHAT_QUERY_EXPANSION` | `true` | run the LLM expander on chat queries (5 variants) |
+| `PRISM_CHAT_RERANK` | `true` | cross-encoder rerank on chat. Falls back to hybrid order on rerank failure. |
+| `PRISM_CHAT_RERANK_TOP_K` | `8` | chat post-rerank chunk count |
+| `PRISM_CHAT_PROMPT_CHUNKS` | `6` | chunks fed into the chat prompt |
+| `PRISM_CHAT_CHUNK_CHARS` | `2500` | per-chunk char cap in the chat prompt (was 500 pre-overhaul, which clipped bullet lists) |
+| `PRISM_CHAT_USE_HYDE` | `true` | hypothetical-document expansion for the vector probe |
+| `PRISM_CHAT_AGENTIC_REFINE` | `true` | one bounded re-search when the first pass looks weak |
+| `PRISM_CHAT_REFINE_MAX_SCORE` | `0.05` | trigger threshold (top score) for the refiner |
+| `PRISM_CHAT_REFINE_MIN_CHUNKS` | `3` | trigger threshold (chunk count) for the refiner |
+| `PRISM_HYDE_MAX_CHARS` | `600` | cap on the hypothetical answer concatenated onto the vector probe |
+| `PRISM_ENABLE_DOCUMENT_SUMMARIES` | `true` | emit one LLM-summary chunk per document at ingest. Big recall win for "list X" queries; costs one bulk-model call per doc. |
+| `PRISM_DOCUMENT_SUMMARY_MAX_INPUT_CHARS` | `12000` | truncation cap for the summarizer input |
 | `PRISM_MAX_RETRIEVAL_ROUNDS` | `2` | max coverage retries |
 | `PRISM_STALENESS_THRESHOLD_DAYS` | `365` | stale source threshold |
 | `PRISM_LLM_BASE_URL` | `http://127.0.0.1:4000/v1` | OpenAI-compatible LLM endpoint |
