@@ -78,6 +78,7 @@ class Settings(BaseSettings):
 
     enable_document_summaries: bool = True
     document_summary_max_input_chars: int = 12000
+    document_summary_concurrency: int = 8
 
     max_retrieval_rounds: int = 2
 

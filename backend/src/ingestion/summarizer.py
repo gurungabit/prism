@@ -119,12 +119,15 @@ async def generate_summary_chunk(
 async def attach_summary_chunks(
     prepared_docs: list,
     *,
-    concurrency: int = 4,
+    concurrency: int | None = None,
     progress_every: int = 25,
 ) -> int:
     """Append a summary chunk to each PreparedDocument. Returns count added."""
     if not settings.enable_document_summaries or not prepared_docs:
         return 0
+
+    if concurrency is None:
+        concurrency = max(1, settings.document_summary_concurrency)
 
     total = len(prepared_docs)
     log.info("summary_phase_start", total=total, concurrency=concurrency)
