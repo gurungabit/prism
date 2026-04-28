@@ -173,10 +173,11 @@ class IngestionPipeline:
             await connector.aclose()
 
         # Partial failures keep any successful chunks but surface an error
-        # status so the operator knows to retry.
+        # status so the operator knows exactly which documents broke.
         failed_count = int(stats.get("failed", 0) or 0)
         index_errors = int(stats.get("index_errors", 0) or 0)
         tombstone_pending = int(stats.get("tombstone_retry_pending", 0) or 0)
+        failures = stats.get("failures") or []
         if failed_count or index_errors or tombstone_pending:
             parts: list[str] = []
             if failed_count:
@@ -187,8 +188,15 @@ class IngestionPipeline:
                 parts.append(
                     f"{tombstone_pending} stale document cleanup(s) pending retry"
                 )
+            # Inline the actual failing paths + reasons so the operator
+            # can fix them without grepping logs. Cap at the first three
+            # so a many-doc failure doesn't blow past the 500-char limit.
+            for entry in failures[:3]:
+                parts.append(f"{entry['path']}: {entry['reason']}")
+            if len(failures) > 3:
+                parts.append(f"(+{len(failures) - 3} more)")
             first_err = stats.get("index_first_error")
-            if first_err:
+            if first_err and not failures:
                 parts.append(f"first: {first_err}")
             await self.source_repo.mark_status(
                 source_id,
@@ -238,7 +246,17 @@ class IngestionPipeline:
         *,
         force: bool,
     ) -> dict[str, Any]:
-        stats: dict[str, Any] = {"total": 0, "indexed": 0, "skipped": 0, "failed": 0}
+        stats: dict[str, Any] = {
+            "total": 0,
+            "indexed": 0,
+            "skipped": 0,
+            "failed": 0,
+            "skipped_empty": 0,
+            # Each entry: {"path": str, "reason": str}. Surfaced in
+            # source.last_error so the operator sees exactly which doc
+            # broke and why.
+            "failures": [],
+        }
 
         try:
             # Connectors are sync httpx today (GitLab pages projects + tree
@@ -273,7 +291,7 @@ class IngestionPipeline:
                     total=len(doc_refs),
                     path=ref.source_path,
                 )
-                raw_doc = await asyncio.to_thread(connector.fetch_document, ref)
+                raw_doc = await self._fetch_with_retry(connector, ref, idx)
                 log.info(
                     "fetch_document_ok",
                     source=source.name,
@@ -338,7 +356,19 @@ class IngestionPipeline:
                 )
 
                 if not parsed_content.strip():
-                    stats["failed"] += 1
+                    # Empty parse is NOT a failure of our system -- the
+                    # file genuinely has no extractable text (binary
+                    # masquerading as markdown, 0-byte placeholder,
+                    # etc.). Count as skipped + log explicitly so it's
+                    # not silent, but don't tank the source status.
+                    stats["skipped_empty"] += 1
+                    stats["skipped"] += 1
+                    log.warning(
+                        "document_parse_empty_skipped",
+                        source=source.name,
+                        index=idx,
+                        path=ref.source_path,
+                    )
                     continue
 
                 chunks = chunk_document(document_id, parsed_content, raw_doc)
@@ -372,6 +402,9 @@ class IngestionPipeline:
             except Exception as e:  # noqa: BLE001
                 log.error("document_parse_failed", path=ref.source_path, error=str(e))
                 stats["failed"] += 1
+                stats["failures"].append(
+                    {"path": ref.source_path, "reason": f"parse: {str(e)[:200]}"}
+                )
 
         if not prepared:
             log.info("no_documents_to_index", source=source.name)
@@ -446,6 +479,12 @@ class IngestionPipeline:
             except Exception as e:  # noqa: BLE001
                 log.error("graph_populate_failed", path=doc.raw_doc.ref.source_path, error=str(e))
                 stats["failed"] += 1
+                stats["failures"].append(
+                    {
+                        "path": doc.raw_doc.ref.source_path,
+                        "reason": f"graph_populate: {str(e)[:200]}",
+                    }
+                )
                 continue
 
             # Content-update cleanup: drop the orphaned graph row keyed
@@ -545,6 +584,49 @@ class IngestionPipeline:
             chunk.metadata.org_id = scope.org_id
             chunk.metadata.team_id = scope.team_id
             chunk.metadata.service_id = scope.service_id
+
+    async def _fetch_with_retry(
+        self,
+        connector,
+        ref: DocumentRef,
+        idx: int,
+        *,
+        attempts: int = 2,
+        backoff_seconds: float = 2.0,
+    ) -> RawDocument:
+        """Fetch a single document with bounded retry on transient errors.
+
+        ``attempts=2`` means: try, fail, retry once, fail for real. Catches
+        the common case of a network blip or upstream 5xx during a long
+        ingest. Non-transient errors (4xx, decode errors, etc.) propagate
+        on the first try -- retrying won't help.
+        """
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return await asyncio.to_thread(connector.fetch_document, ref)
+            except Exception as e:  # noqa: BLE001
+                last_error = e
+                msg = str(e).lower()
+                # Retry on transport / 5xx markers; bail on auth / not-found.
+                transient = any(
+                    marker in msg
+                    for marker in ("500", "502", "503", "504", "timeout", "connection")
+                )
+                if not transient or attempt >= attempts:
+                    raise
+                log.warning(
+                    "fetch_document_retry",
+                    index=idx,
+                    path=ref.source_path,
+                    attempt=attempt,
+                    error=str(e)[:200],
+                )
+                await asyncio.sleep(backoff_seconds)
+        # Unreachable -- the loop either returns or raises -- but mypy is
+        # happier with an explicit raise.
+        assert last_error is not None
+        raise last_error
 
     async def close(self) -> None:
         # All repos share the same Postgres pool; close() is a no-op for
