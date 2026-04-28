@@ -92,3 +92,27 @@ def test_normalize_chunks_round_trip_from_checkpoint_payload():
 
     assert restored[0].metadata.source_path == "docs/a.md"
     assert restored[0].metadata.last_modified is not None
+
+
+def test_looks_like_schema_leak_catches_pydantic_class_names():
+    # Real failure mode: bulk model echoed the schema's class-name
+    # metadata back as the field value.
+    assert orchestrator._looks_like_schema_leak("TurnTitleOutput")
+    assert orchestrator._looks_like_schema_leak("ChatAnswerOutput")
+    assert orchestrator._looks_like_schema_leak("RouterSchema")
+    # Real titles must NOT trip the heuristic.
+    assert not orchestrator._looks_like_schema_leak("SSO Rollout Risk")
+    assert not orchestrator._looks_like_schema_leak("Output for Q3")
+
+
+def test_fallback_title_truncates_long_requirements_with_ellipsis():
+    long_req = "How do we migrate the legacy auth flow to the new OIDC " * 5
+    title = orchestrator._fallback_title(long_req, max_chars=60)
+    assert len(title) <= 60
+    assert title.endswith("…")
+
+
+def test_fallback_title_passes_short_requirements_through():
+    assert orchestrator._fallback_title("Short question") == "Short question"
+    # Internal whitespace collapses.
+    assert orchestrator._fallback_title("Short\n\nquestion") == "Short question"

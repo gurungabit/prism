@@ -149,11 +149,30 @@ def _format_thread_context(prior_turns: list) -> str:
     return "\n\n".join(lines)
 
 
+def _looks_like_schema_leak(title: str) -> bool:
+    # Defends against the LLM echoing schema metadata back as the field
+    # value (the Pydantic class name leaks through JSON-schema's
+    # ``title`` metadata field). Anything that looks like a Python class
+    # name -- single CamelCase word, no spaces, ends in ``Output`` /
+    # ``Schema`` / ``Model`` -- is almost certainly not a real headline.
+    if " " in title:
+        return False
+    return title.endswith(("Output", "Schema", "Model"))
+
+
+def _fallback_title(requirement: str, max_chars: int = 60) -> str:
+    flat = " ".join(requirement.split())
+    if len(flat) <= max_chars:
+        return flat
+    return flat[: max_chars - 1].rstrip() + "…"
+
+
 async def _generate_and_persist_title(analysis_id: str, requirement: str) -> None:
-    # Fire-and-forget helper: generate a 4-8 word headline, then write it
-    # onto the analysis row so the UI can swap it in for the raw
-    # paragraph-length requirement. Any failure is logged and swallowed --
-    # the UI falls back to the requirement if title stays NULL.
+    # Fire-and-forget: generate a 4-8 word headline, persist it. Any
+    # failure (LLM down, parse fail, schema-leak garbage) drops back to
+    # the truncated requirement so the UI never has to render NULL or
+    # ``TurnTitleOutput``.
+    title = ""
     try:
         result = await llm_call(
             prompt=f"Requirement:\n{requirement}\n\nWrite the title.",
@@ -163,11 +182,31 @@ async def _generate_and_persist_title(analysis_id: str, requirement: str) -> Non
             agent_name="title",
             analysis_id=analysis_id,
         )
-        title = (result.title or "").strip().strip('"').strip("'")
-        if not title:
-            return
-        from src.ingestion.analysis_store import AnalysisRepository
+        candidate = (result.headline or "").strip().strip('"').strip("'")
+        if candidate and not _looks_like_schema_leak(candidate):
+            title = candidate
+        elif candidate:
+            log.warning(
+                "title_schema_leak_detected",
+                analysis_id=analysis_id,
+                candidate=candidate,
+            )
+    except Exception as e:  # noqa: BLE001
+        log.warning(
+            "title_generation_failed",
+            analysis_id=analysis_id,
+            error=str(e)[:200],
+        )
 
+    if not title:
+        title = _fallback_title(requirement)
+
+    if not title:
+        return
+
+    from src.ingestion.analysis_store import AnalysisRepository
+
+    try:
         repo = await AnalysisRepository.create()
         try:
             await repo.update_title(analysis_id, title)
@@ -175,7 +214,7 @@ async def _generate_and_persist_title(analysis_id: str, requirement: str) -> Non
             await repo.close()
     except Exception as e:  # noqa: BLE001
         log.warning(
-            "title_generation_failed",
+            "title_persist_failed",
             analysis_id=analysis_id,
             error=str(e)[:200],
         )

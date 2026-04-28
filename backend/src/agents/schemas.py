@@ -189,7 +189,12 @@ class PlanOutput(BaseModel):
 class TurnTitleOutput(BaseModel):
     """4-8 word headline the UI uses in place of the full requirement text."""
 
-    title: str
+    # Field is ``headline`` rather than ``title`` because the JSON Schema
+    # generator stamps ``"title": "TurnTitleOutput"`` as schema metadata,
+    # and bulk models occasionally echo that schema-metadata string as
+    # the field value when the field is also named ``title``. Renaming
+    # the field eliminates the collision.
+    headline: str
 
 
 class ChatAnswerOutput(BaseModel):
