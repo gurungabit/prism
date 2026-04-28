@@ -120,26 +120,54 @@ async def attach_summary_chunks(
     prepared_docs: list,
     *,
     concurrency: int = 4,
+    progress_every: int = 25,
 ) -> int:
     """Append a summary chunk to each PreparedDocument. Returns count added."""
     if not settings.enable_document_summaries or not prepared_docs:
         return 0
 
+    total = len(prepared_docs)
+    log.info("summary_phase_start", total=total, concurrency=concurrency)
+
     sem = asyncio.Semaphore(concurrency)
 
-    async def _one(doc) -> Chunk | None:
+    async def _one(idx: int, doc) -> tuple[int, Chunk | None | Exception]:
         async with sem:
-            return await generate_summary_chunk(
-                doc.document_id, doc.parsed_content, doc.raw_doc
-            )
+            try:
+                chunk = await generate_summary_chunk(
+                    doc.document_id, doc.parsed_content, doc.raw_doc
+                )
+                return idx, chunk
+            except Exception as e:  # noqa: BLE001
+                return idx, e
 
-    results = await asyncio.gather(
-        *[_one(d) for d in prepared_docs], return_exceptions=True
-    )
+    tasks = [
+        asyncio.create_task(_one(i, d)) for i, d in enumerate(prepared_docs)
+    ]
 
     added = 0
-    for doc, result in zip(prepared_docs, results):
+    failed = 0
+    completed = 0
+    results: list[Chunk | None] = [None] * total
+
+    for fut in asyncio.as_completed(tasks):
+        idx, result = await fut
+        completed += 1
         if isinstance(result, Exception) or result is None:
+            failed += 1
+        else:
+            results[idx] = result
+        if completed % progress_every == 0 or completed == total:
+            log.info(
+                "summary_phase_progress",
+                completed=completed,
+                total=total,
+                added=completed - failed,
+                failed=failed,
+            )
+
+    for doc, result in zip(prepared_docs, results):
+        if result is None:
             continue
         doc.chunks.append(result)
         for idx, chunk in enumerate(doc.chunks):
@@ -147,6 +175,5 @@ async def attach_summary_chunks(
             chunk.metadata.total_chunks = len(doc.chunks)
         added += 1
 
-    if added:
-        log.info("summary_chunks_added", count=added, of=len(prepared_docs))
+    log.info("summary_phase_complete", added=added, failed=failed, total=total)
     return added
