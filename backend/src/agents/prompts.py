@@ -26,21 +26,10 @@ def _neutralize_fence_markers(text: str) -> str:
 
 
 def safe_fence_attr(value: object) -> str:
-    """Render a fence-attribute value safely for inclusion in a
-    ``<<<DOC ...>>>`` header.
+    """Neutralize fence markers + JSON-encode for ``<<<DOC ...>>>`` attributes.
 
-    Two transforms in order:
-
-    1. Neutralize fence markers so an attacker-controlled value can't
-       inject a forged close + open and forge a second DOC block.
-    2. JSON-encode the result so quotes, newlines, and other syntax
-       characters can't break the attribute parser. The JSON output
-       comes pre-quoted, so call sites use ``key={safe_fence_attr(v)}``
-       (no surrounding quotes in the f-string).
-
-    Used by ``format_chunks_for_prompt`` and by the document
-    summarizer; both render untrusted attributes (paths, titles,
-    headings) into prompts the model will see.
+    Output comes pre-quoted, so call sites use ``key={safe_fence_attr(v)}``
+    (no surrounding quotes).
     """
     s = "" if value is None else str(value)
     return json.dumps(_neutralize_fence_markers(s))

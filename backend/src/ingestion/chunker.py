@@ -43,15 +43,8 @@ def chunk_document(
             if not stripped:
                 continue
 
-            # Prepend a short "context line" so the embedding model and
-            # BM25 both see the document title and section heading. The
-            # original section_heading and document_title also live on
-            # the chunk metadata for filtering / display, but inlining
-            # them in ``content`` is what fixes the recall failure on
-            # queries whose vocabulary matches the heading rather than
-            # the body (e.g. "external services" -> the section is
-            # titled "External Service Integrations" but its body just
-            # bullet-lists names).
+            # Inline the heading + title so embedding and BM25 see them
+            # alongside the body, not just on metadata.
             context_line = _build_context_line(document_title, section_heading)
             content_with_context = (
                 f"{context_line}\n\n{stripped}" if context_line else stripped
@@ -93,9 +86,6 @@ def _build_context_line(document_title: str, section_heading: str) -> str:
         cleaned = (part or "").strip()
         if not cleaned:
             continue
-        # Deduplicate when the doc title and the H1 are the same string
-        # (very common in README-style docs); a "Title > Title" prefix
-        # is just noise.
         key = cleaned.lower()
         if key in seen:
             continue
@@ -182,11 +172,8 @@ def _split_long_paragraph(text: str, chunk_size: int, overlap: int) -> list[str]
     if chunk_size <= 0 or not text:
         return [text] if text else []
 
-    # Bullet / numbered lists have no sentence-ending periods, so the
-    # generic ``rfind(". ")`` splitter would slice mid-line. When the
-    # paragraph is recognizably a list, split at item boundaries
-    # instead -- keeps each bullet whole, which is what RAG needs for
-    # "list of X" questions.
+    # Bullet/numbered lists have no sentence-ending periods, so the
+    # generic ``rfind(". ")`` splitter below would slice mid-line.
     if _is_list_block(text):
         return _split_list_block(text, chunk_size, overlap)
 
@@ -211,11 +198,8 @@ def _split_long_paragraph(text: str, chunk_size: int, overlap: int) -> list[str]
 
 
 def _is_list_block(text: str) -> bool:
-    """Heuristic: a paragraph qualifies as a list block when at least
-    half its non-empty lines start with a markdown bullet or numbered
-    list marker. The 0.5 threshold tolerates list intros like "Key
-    components:" sharing a paragraph with the items below.
-    """
+    # ``>= 50%`` of non-empty lines marker-led tolerates list intros
+    # like "Key components:" sharing the paragraph with their items.
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if not lines:
         return False
@@ -224,10 +208,6 @@ def _is_list_block(text: str) -> bool:
 
 
 def _split_list_block(text: str, chunk_size: int, overlap: int) -> list[str]:
-    """Split a list block at item boundaries. Items themselves are kept
-    whole; the splitter only inserts a break when adding the next item
-    would push the chunk past ``chunk_size``.
-    """
     items: list[str] = []
     current: list[str] = []
     for line in text.splitlines():

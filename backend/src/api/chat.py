@@ -130,14 +130,9 @@ async def chat_stream(
             use_hyde=settings.chat_use_hyde,
         )
         if settings.chat_rerank and chunks:
-            # Rerank failures (cross-encoder model not loaded, OOM, the
-            # ``predict`` call raising) must NOT abort the chat stream --
-            # the hybrid results are already usable and dropping them
-            # because rerank failed is strictly worse than skipping the
-            # rerank step. The chat surface only treats
-            # ``RetrievalUnavailable`` (full search outage) as a hard
-            # stop; everything else degrades to "best-effort
-            # un-reranked".
+            # Rerank failure must not abort the stream; fall back to the
+            # un-reranked hybrid results. Only RetrievalUnavailable is
+            # a hard stop.
             try:
                 chunks = rerank_chunks(
                     chunks,
@@ -157,13 +152,8 @@ async def chat_stream(
             scope_filter=scope_filter,
         )
     except RetrievalUnavailable:
-        # Retrieval is down. We don't want to fall through into LLM
-        # synthesis -- the model would either invent an answer or
-        # refuse, both of which are worse than a clear "infra is
-        # down" signal. Emit a typed SSE error event so the UI can
-        # render a retryable banner instead of treating it as a
-        # normal turn. The pending user message is *not* committed --
-        # this turn never happened from the user's history perspective.
+        # Don't fall through into LLM synthesis without grounding --
+        # emit a typed SSE error and skip committing the user message.
         log.error("chat_retrieval_unavailable", conversation_id=conversation_id)
         yield {
             "event": "error",

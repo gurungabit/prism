@@ -108,14 +108,8 @@ _WIKI_FORMAT_TO_EXT = {
 
 
 class GitLabAPIError(RuntimeError):
-    """Raised when the GitLab API returns a non-2xx response we can't recover from.
-
-    ``status_code`` is the HTTP status from the upstream response when
-    the failure came from a transport call -- callers branch on it to
-    decide whether a retry / fallback path makes sense (5xx) vs. giving
-    up immediately (4xx). ``None`` for cases that aren't tied to a
-    specific response (config errors, malformed paths, etc.).
-    """
+    """GitLab API returned a non-2xx response. ``status_code`` is the HTTP
+    status when the failure came from a transport call, else ``None``."""
 
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
         super().__init__(message)
@@ -345,37 +339,20 @@ class GitLabConnector(Connector):
             "per_page=100",
             "archived=false",
         ]
-        # Skip dormant projects -- avoids ingesting old experimental forks
-        # that haven't been touched in months. ``last_activity_at`` covers
-        # commits, MRs, issues, releases, etc. -- the standard "active"
-        # signal in GitLab. Set ``gitlab_group_active_window_days = 0`` in
-        # settings to disable.
         active_days = settings.gitlab_group_active_window_days
         cutoff: datetime | None = None
         if active_days and active_days > 0:
             cutoff = datetime.now(tz=timezone.utc) - timedelta(days=active_days)
 
-        # Progressive degradation across self-hosted GitLab quirks. Some
-        # instances (and gitlab.com under load) return 500 when
-        # ``order_by=last_activity_at`` is combined with
-        # ``include_subgroups=true`` and / or ``last_activity_after`` for
-        # large groups. The path that *should* be cheap on the server
-        # turns out to be the path that fails first. Try richest -> poorest
-        # and apply the activity-window cutoff client-side when the
-        # server stops doing it for us.
-        #
-        # Each attempt is a list of extra params on top of ``base_params``.
+        # Some self-hosted instances 500 on the rich
+        # ``order_by`` + ``last_activity_after`` combo; degrade
+        # progressively and apply the cutoff client-side if needed.
         attempts: list[tuple[str, list[str]]] = []
         rich = ["order_by=last_activity_at"]
         if cutoff is not None:
             rich.append(f"last_activity_after={cutoff.isoformat()}")
         attempts.append(("full", rich))
-        # Drop ``last_activity_after`` first -- it's the most likely
-        # culprit on older / customized GitLab instances.
         attempts.append(("no_cutoff", ["order_by=last_activity_at"]))
-        # Last resort: no ordering, no server-side filter. Slower for the
-        # caller (we may walk dormant projects) but works on every
-        # GitLab version we've seen.
         attempts.append(("plain", []))
 
         last_error: GitLabAPIError | None = None
@@ -387,9 +364,7 @@ class GitLabConnector(Connector):
                     endpoint, limit=settings.gitlab_max_projects_per_source
                 )
             except GitLabAPIError as e:
-                # 5xx is the only thing we retry through -- 401/403/404
-                # mean "auth bad" / "group missing", which the next
-                # attempt will hit just as hard.
+                # Only retry 5xx -- 4xx will hit the next attempt the same way.
                 if e.status_code is None or e.status_code // 100 != 5:
                     raise
                 log.warning(
@@ -409,11 +384,6 @@ class GitLabConnector(Connector):
                     attempt=label,
                     project_count=len(projects),
                 )
-            # Apply the activity cutoff client-side whenever the server
-            # didn't get a chance to. ``last_activity_at`` is on every
-            # project dict GitLab returns; missing values fail open
-            # (kept) rather than silently dropping projects whose
-            # metadata is incomplete.
             if cutoff is not None and "last_activity_after" not in "&".join(extras):
                 projects = [
                     p
@@ -422,8 +392,6 @@ class GitLabConnector(Connector):
                 ]
             return projects
 
-        # Every attempt 5xx'd. Surface the last error so the operator
-        # sees the actual GitLab response body, not a synthetic message.
         assert last_error is not None
         raise last_error
 
@@ -457,26 +425,12 @@ class GitLabConnector(Connector):
         page: int = 1,
         per_page: int = 20,
     ) -> tuple[list[dict[str, Any]], bool]:
-        """Search projects via ``/projects?search=…``.
-
-        Browse vs. find: when the user hasn't typed anything we scope to
-        ``membership=true`` so the dropdown doesn't dump every public
-        project on the instance. As soon as they start typing they're
-        explicitly looking for something they may not own (a public docs
-        repo, another team's repo they have read access to, etc.), so
-        drop the membership filter and let GitLab show every visible
-        match. ``simple=true`` trims the payload to just what the
-        picker needs.
-
-        Returns ``(projects, has_more)``. ``has_more`` comes from the
-        ``X-Next-Page`` header -- GitLab dropped ``X-Total`` on gitlab.com for
-        large instances, so we can't rely on a total count.
+        """Search projects. Empty query browses your own; non-empty
+        broadens to anything visible to the token.
         """
         params: list[str] = [
             "simple=true",
-            # Intentionally no order_by -- gitlab.com returns a 500 when
-            # ``simple=true`` is combined with ``order_by=last_activity_at``
-            # for the membership listing. GitLab's default ordering is fine.
+            # gitlab.com 500s on ``simple=true`` + ``order_by=last_activity_at``.
             f"per_page={max(1, min(per_page, 100))}",
             f"page={max(page, 1)}",
         ]
@@ -504,15 +458,9 @@ class GitLabConnector(Connector):
         page: int = 1,
         per_page: int = 20,
     ) -> tuple[list[dict[str, Any]], bool]:
-        """Search groups via ``/groups?search=…``.
-
-        Mirrors ``search_projects`` -- with a token we scope to
-        ``membership=true`` so the dropdown shows the user's groups
-        rather than every public group on the instance. The earlier
-        ``min_access_level=10`` (Guest) variant was wrong: on
-        gitlab.com Guest is the default access level for public
-        groups, so every public group on the instance leaked into
-        the picker.
+        """Search groups. Empty query is implicitly your own (gitlab.com
+        ``/groups`` excludes public when authenticated); non-empty adds
+        ``all_available=true`` to broaden.
         """
         params: list[str] = [
             f"per_page={max(1, min(per_page, 100))}",
@@ -520,12 +468,6 @@ class GitLabConnector(Connector):
         ]
         if query:
             params.append(f"search={quote(query, safe='')}")
-        # Browse vs. find. ``/groups`` has an asymmetry that ``/projects``
-        # doesn't: an authenticated ``/groups?search=…`` defaults to
-        # "your groups only" -- public groups are excluded unless we set
-        # ``all_available=true``. That makes the empty-query browse case
-        # already correct for membership-only without any flag, but the
-        # search case has to opt in explicitly to broaden.
         if self._effective_token and query:
             params.append("all_available=true")
         endpoint = f"/groups?{'&'.join(params)}"
@@ -676,14 +618,8 @@ def _parse_gitlab_datetime(value: Any) -> datetime | None:
 
 
 def _project_active_after(project: dict[str, Any], cutoff: datetime) -> bool:
-    """Client-side equivalent of the ``last_activity_after`` server filter.
-
-    Used when the connector's progressive fallback skipped the
-    server-side filter (because the instance 500s on it). Missing /
-    unparseable timestamps fail open: we'd rather over-include a
-    dormant project than silently drop one whose metadata is
-    incomplete.
-    """
+    """Client-side equivalent of ``last_activity_after``. Missing
+    timestamps fail open (kept) rather than silently dropping projects."""
     last_activity = _parse_gitlab_datetime(project.get("last_activity_at"))
     if last_activity is None:
         return True

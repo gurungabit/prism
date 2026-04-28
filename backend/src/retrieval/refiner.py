@@ -1,19 +1,4 @@
-"""Agentic refinement: one bounded re-search when the first pass is weak.
-
-After the primary retrieval (expansion + HyDE + hybrid + rerank) the
-chat surface peeks at the result quality. If it's thin -- fewer than
-``chat_refine_min_chunks`` results, or the top score is below
-``chat_refine_max_score`` -- the LLM is asked to reformulate the query
-into a search-friendlier form and we run one more retrieval pass.
-Results are merged (refined first, then originals fill the rest) so
-the user gets a strict superset of the first pass.
-
-This is intentionally NOT a full agentic-RAG tool loop. Tool loops
-work but they're expensive (extra LLM round trips per turn) and they
-can spiral on degenerate queries. A single bounded retry catches the
-common "the user phrased it differently than the docs" case at modest
-cost.
-"""
+"""One bounded LLM-rewrite + re-search when the first chat pass is weak."""
 
 from __future__ import annotations
 
@@ -48,12 +33,7 @@ async def maybe_refine_retrieval(
     original_query: str,
     scope_filter: dict | None,
 ) -> list[Chunk]:
-    """If ``chunks`` looks thin, run one refined retrieval pass and
-    merge. Returns the (possibly augmented) chunk list.
-
-    ``engine`` is a ``HybridSearchEngine`` -- typed as ``Any`` here to
-    avoid a circular import with the chat module.
-    """
+    """Return ``chunks`` augmented with a refined pass if the first looks thin."""
     if not settings.chat_agentic_refine:
         return chunks
 
@@ -81,17 +61,11 @@ async def maybe_refine_retrieval(
             use_hyde=settings.chat_use_hyde,
         )
     except Exception as e:  # noqa: BLE001
-        # Don't let a refine failure poison the original results --
-        # caller already has something usable.
         log.warning("agentic_refine_search_failed", error=str(e)[:200])
         return chunks
 
     merged = _merge_unique(refined_chunks, chunks)
     if settings.chat_rerank and merged:
-        # Same defensive shape as the chat-side rerank: a cross-encoder
-        # failure on the merged set must not poison results we already
-        # had from the primary pass. Fall back to the merged-but-not-
-        # reranked list, capped to the same top-k.
         try:
             merged = rerank_chunks(
                 merged,
@@ -147,8 +121,6 @@ async def _rewrite_query(query: str) -> str | None:
             ],
         )
         text = (response.choices[0].message.content or "").strip()
-        # Strip stray quotes or trailing punctuation the model sometimes
-        # adds despite the prompt.
         text = text.strip("\"' \n\t")
         return text or None
     except Exception as e:  # noqa: BLE001

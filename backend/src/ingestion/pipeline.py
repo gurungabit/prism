@@ -377,18 +377,9 @@ class IngestionPipeline:
             log.info("no_documents_to_index", source=source.name)
             return stats
 
-        # Phase 1.5 -- emit one LLM-summary chunk per document. Runs
-        # before embed so the summaries flow through the same batch
-        # and don't need a second OpenSearch round-trip. Best-effort:
-        # if the LLM is down, the document still gets indexed via its
-        # section chunks alone.
-        #
-        # Re-stamp scope after the summary attaches: section chunks were
-        # stamped at chunk time (line above), but summary chunks land
-        # later from the summarizer and would otherwise be missing
-        # ``org_id`` / ``team_id`` / ``service_id``. Scoped retrieval
-        # uses ``org_id`` as a hard term filter, so an unstamped summary
-        # chunk would be invisible to every scoped chat / analyze run.
+        # Best-effort summary chunks. Re-stamp scope after attach --
+        # summary chunks come back unscoped and the org_id filter on
+        # retrieval would otherwise hide them.
         summary_count = await attach_summary_chunks(prepared)
         if summary_count:
             for doc in prepared:

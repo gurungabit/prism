@@ -63,11 +63,8 @@ class HybridSearchEngine:
         else:
             queries = [requirement]
 
-        # HyDE: drafted hypothetical answer used as the *vector* probe.
-        # We don't add it to ``queries`` because BM25 over fabricated text
-        # would just inject noise into lexical retrieval; vector space is
-        # where the gain shows up. Falls back to the raw query embedding
-        # when the LLM call fails.
+        # HyDE feeds the vector probe only -- BM25 over fabricated text
+        # would just inject noise into lexical retrieval.
         vector_probe_text = requirement
         if use_hyde:
             hyde_text = await hypothetical_answer(requirement)
@@ -146,14 +143,6 @@ class HybridSearchEngine:
         filters: dict | None = None,
         scope_filter: dict | None = None,
     ) -> list[Chunk]:
-        # ``best_fields`` over (content, section_heading, document_title)
-        # with descending boosts. The heading boost is what fixes the
-        # recall failure on queries whose vocabulary aligns with the
-        # heading (e.g. user asks about "external services", README
-        # section is titled "External Service Integrations" but its body
-        # is just bullet names). ``cross_fields`` was tempting but it
-        # requires the same analyzer across fields and behaves poorly on
-        # short keyword-y headings -- ``best_fields`` is more forgiving.
         body: dict = {
             "size": top_k,
             "query": {

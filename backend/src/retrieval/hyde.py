@@ -1,16 +1,4 @@
-"""HyDE (Hypothetical Document Embeddings) helper.
-
-Asks the LLM to draft a short, plausible answer to the query as if it
-were already stated in some piece of org documentation, then returns
-that text. The caller embeds it and uses it as the vector-search
-query. The reason it helps: a query like "what external services does
-nbus call?" sits semantically far from a documentation chunk titled
-"External Service Integrations" whose body is just bullet names. A
-hypothetical answer ("nbus calls FIMS, Myriad, ODM ...") sits much
-closer to that chunk in embedding space.
-
-Cheap LLM call, cached per query, fully optional via ``settings``.
-"""
+"""HyDE: ask the LLM for a hypothetical answer to use as the vector probe."""
 
 from __future__ import annotations
 
@@ -39,9 +27,7 @@ _MAX_CACHE = 128
 
 
 async def hypothetical_answer(query: str) -> str | None:
-    """Return a short hypothetical answer to ``query`` or ``None`` if
-    the LLM call fails. The caller falls back to the raw query.
-    """
+    """Return a short hypothetical answer, or ``None`` on LLM failure."""
     cached = _cache.get(query)
     if cached is not None:
         _cache.move_to_end(query)

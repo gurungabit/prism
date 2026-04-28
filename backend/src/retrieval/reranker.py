@@ -54,14 +54,7 @@ def rerank_chunks(
     requirement: str,
     top_k: int | None = None,
 ) -> list[Chunk]:
-    """Doc-type-agnostic rerank for the chat surface.
-
-    The agent reranker filters by ``DOC_TYPE_AGENT_RELEVANCE`` first --
-    that's right for analysis pipelines that know what kind of evidence
-    each agent needs (a risk agent shouldn't see catalog docs). Chat
-    has no such prior; a question can land on any doc type. Skip the
-    type filter and let the cross-encoder rank purely on relevance.
-    """
+    """Doc-type-agnostic rerank for the chat surface."""
     top_k = top_k or settings.rerank_top_k
     if not chunks:
         return []
