@@ -108,7 +108,18 @@ _WIKI_FORMAT_TO_EXT = {
 
 
 class GitLabAPIError(RuntimeError):
-    """Raised when the GitLab API returns a non-2xx response we can't recover from."""
+    """Raised when the GitLab API returns a non-2xx response we can't recover from.
+
+    ``status_code`` is the HTTP status from the upstream response when
+    the failure came from a transport call -- callers branch on it to
+    decide whether a retry / fallback path makes sense (5xx) vs. giving
+    up immediately (4xx). ``None`` for cases that aren't tied to a
+    specific response (config errors, malformed paths, etc.).
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class GitLabConnector(Connector):
@@ -329,11 +340,10 @@ class GitLabConnector(Connector):
 
     def _list_group_projects(self, group_path: str, *, include_subgroups: bool) -> list[dict[str, Any]]:
         encoded = quote(group_path, safe="")
-        params = [
+        base_params = [
             f"include_subgroups={'true' if include_subgroups else 'false'}",
             "per_page=100",
             "archived=false",
-            "order_by=last_activity_at",
         ]
         # Skip dormant projects -- avoids ingesting old experimental forks
         # that haven't been touched in months. ``last_activity_at`` covers
@@ -341,11 +351,81 @@ class GitLabConnector(Connector):
         # signal in GitLab. Set ``gitlab_group_active_window_days = 0`` in
         # settings to disable.
         active_days = settings.gitlab_group_active_window_days
+        cutoff: datetime | None = None
         if active_days and active_days > 0:
             cutoff = datetime.now(tz=timezone.utc) - timedelta(days=active_days)
-            params.append(f"last_activity_after={cutoff.isoformat()}")
-        endpoint = f"/groups/{encoded}/projects?{'&'.join(params)}"
-        return self._paginate(endpoint, limit=settings.gitlab_max_projects_per_source)
+
+        # Progressive degradation across self-hosted GitLab quirks. Some
+        # instances (and gitlab.com under load) return 500 when
+        # ``order_by=last_activity_at`` is combined with
+        # ``include_subgroups=true`` and / or ``last_activity_after`` for
+        # large groups. The path that *should* be cheap on the server
+        # turns out to be the path that fails first. Try richest -> poorest
+        # and apply the activity-window cutoff client-side when the
+        # server stops doing it for us.
+        #
+        # Each attempt is a list of extra params on top of ``base_params``.
+        attempts: list[tuple[str, list[str]]] = []
+        rich = ["order_by=last_activity_at"]
+        if cutoff is not None:
+            rich.append(f"last_activity_after={cutoff.isoformat()}")
+        attempts.append(("full", rich))
+        # Drop ``last_activity_after`` first -- it's the most likely
+        # culprit on older / customized GitLab instances.
+        attempts.append(("no_cutoff", ["order_by=last_activity_at"]))
+        # Last resort: no ordering, no server-side filter. Slower for the
+        # caller (we may walk dormant projects) but works on every
+        # GitLab version we've seen.
+        attempts.append(("plain", []))
+
+        last_error: GitLabAPIError | None = None
+        for label, extras in attempts:
+            params = list(base_params) + list(extras)
+            endpoint = f"/groups/{encoded}/projects?{'&'.join(params)}"
+            try:
+                projects = self._paginate(
+                    endpoint, limit=settings.gitlab_max_projects_per_source
+                )
+            except GitLabAPIError as e:
+                # 5xx is the only thing we retry through -- 401/403/404
+                # mean "auth bad" / "group missing", which the next
+                # attempt will hit just as hard.
+                if e.status_code is None or e.status_code // 100 != 5:
+                    raise
+                log.warning(
+                    "gitlab_group_listing_degraded",
+                    group_path=group_path,
+                    attempt=label,
+                    status=e.status_code,
+                    error=str(e)[:200],
+                )
+                last_error = e
+                continue
+
+            if label != "full":
+                log.info(
+                    "gitlab_group_listing_recovered",
+                    group_path=group_path,
+                    attempt=label,
+                    project_count=len(projects),
+                )
+            # Apply the activity cutoff client-side whenever the server
+            # didn't get a chance to. ``last_activity_at`` is on every
+            # project dict GitLab returns; missing values fail open
+            # (kept) rather than silently dropping projects whose
+            # metadata is incomplete.
+            if cutoff is not None and "last_activity_after" not in "&".join(extras):
+                projects = [
+                    p
+                    for p in projects
+                    if _project_active_after(p, cutoff)
+                ]
+            return projects
+
+        # Every attempt 5xx'd. Surface the last error so the operator
+        # sees the actual GitLab response body, not a synthetic message.
+        assert last_error is not None
+        raise last_error
 
     def _list_knowledge_paths(self, project_id: int, ref: str) -> list[str]:
         """Walk the project's tree and return knowledge paths."""
@@ -583,12 +663,28 @@ def _parse_gitlab_datetime(value: Any) -> datetime | None:
     return dt
 
 
+def _project_active_after(project: dict[str, Any], cutoff: datetime) -> bool:
+    """Client-side equivalent of the ``last_activity_after`` server filter.
+
+    Used when the connector's progressive fallback skipped the
+    server-side filter (because the instance 500s on it). Missing /
+    unparseable timestamps fail open: we'd rather over-include a
+    dormant project than silently drop one whose metadata is
+    incomplete.
+    """
+    last_activity = _parse_gitlab_datetime(project.get("last_activity_at"))
+    if last_activity is None:
+        return True
+    return last_activity >= cutoff
+
+
 def _raise_for_status(response: httpx.Response, context: str) -> None:
     if response.status_code // 100 == 2:
         return
     body_snippet = response.text[:200] if response.text else ""
     raise GitLabAPIError(
-        f"GitLab API {response.status_code} on {context}: {body_snippet}"
+        f"GitLab API {response.status_code} on {context}: {body_snippet}",
+        status_code=response.status_code,
     )
 
 

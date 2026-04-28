@@ -827,8 +827,20 @@ async def validate_source(body: SourceValidateBody) -> dict[str, Any]:
                 "total_projects": len(projects),
             }
         except GitLabAPIError as e:
+            log.error(
+                "gitlab_validate_failed",
+                config=body.config,
+                status=e.status_code,
+                error=str(e)[:300],
+            )
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:  # noqa: BLE001
+            log.error(
+                "gitlab_validate_failed_unexpected",
+                config=body.config,
+                error=str(e)[:300],
+                error_type=type(e).__name__,
+            )
             raise HTTPException(status_code=400, detail=f"GitLab validation failed: {e}") from e
         finally:
             connector.close()
@@ -928,8 +940,22 @@ async def search_gitlab_projects(body: GitLabProjectSearchBody) -> dict[str, Any
             "has_more": has_more,
         }
     except GitLabAPIError as e:
+        log.error(
+            "gitlab_project_search_failed",
+            base_url=body.base_url,
+            query=body.query,
+            status=e.status_code,
+            error=str(e)[:300],
+        )
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:  # noqa: BLE001
+        log.error(
+            "gitlab_project_search_failed_unexpected",
+            base_url=body.base_url,
+            query=body.query,
+            error=str(e)[:300],
+            error_type=type(e).__name__,
+        )
         raise HTTPException(status_code=400, detail=f"GitLab project search failed: {e}") from e
     finally:
         connector.close()
@@ -970,8 +996,22 @@ async def search_gitlab_groups(body: GitLabGroupSearchBody) -> dict[str, Any]:
             "has_more": has_more,
         }
     except GitLabAPIError as e:
+        log.error(
+            "gitlab_group_search_failed",
+            base_url=body.base_url,
+            query=body.query,
+            status=e.status_code,
+            error=str(e)[:300],
+        )
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:  # noqa: BLE001
+        log.error(
+            "gitlab_group_search_failed_unexpected",
+            base_url=body.base_url,
+            query=body.query,
+            error=str(e)[:300],
+            error_type=type(e).__name__,
+        )
         raise HTTPException(status_code=400, detail=f"GitLab group search failed: {e}") from e
     finally:
         connector.close()

@@ -17,7 +17,12 @@ import pytest
 from src.config import settings
 from src.connectors.base import LocalPathRejected, SourceConfig, resolve_local_path
 from src.connectors.excel import ExcelConnector
-from src.connectors.gitlab import GitLabConnector, _is_knowledge_path, _next_page_url
+from src.connectors.gitlab import (
+    GitLabAPIError,
+    GitLabConnector,
+    _is_knowledge_path,
+    _next_page_url,
+)
 from src.connectors.onenote import OneNoteConnector
 from src.connectors.sharepoint import SharePointConnector
 
@@ -380,6 +385,168 @@ def test_gitlab_missing_config_raises():
     connector = GitLabConnector(source)
     with pytest.raises(Exception):
         connector._resolve_projects()
+    connector.close()
+
+
+def _make_group_connector() -> GitLabConnector:
+    source = SourceConfig(
+        kind="gitlab",
+        name="grp",
+        config={"group_path": "uts/nbus-aws", "include_subgroups": True},
+        token="glpat-test",
+    )
+    return GitLabConnector(source)
+
+
+def test_gitlab_group_listing_falls_back_when_server_500s_on_cutoff():
+    """Some self-hosted GitLab instances 500 on the
+    ``last_activity_after`` filter for ``/groups/.../projects``. The
+    connector must drop the cutoff param and retry instead of bubbling
+    a 500 up to the user."""
+    project = {
+        "id": 1,
+        "name": "svc-a",
+        "path_with_namespace": "uts/nbus-aws/svc-a",
+        "default_branch": "main",
+        "last_activity_at": "2026-04-01T00:00:00Z",
+    }
+    seen_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        seen_urls.append(url)
+        if "/groups/" in url and "/projects" in url:
+            if "last_activity_after=" in url:
+                return httpx.Response(500, json={"message": "500 Internal Server Error"})
+            # Without the cutoff we return a clean list.
+            return httpx.Response(200, json=[project])
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    connector = _make_group_connector()
+    connector._client = httpx.Client(
+        base_url="https://gitlab.example/api/v4",
+        headers={"PRIVATE-TOKEN": "glpat-test"},
+        transport=httpx.MockTransport(handler),
+    )
+
+    with patch.object(settings, "gitlab_group_active_window_days", 30):
+        projects = connector._resolve_projects()
+
+    # First attempt carried the cutoff (and 500'd); second attempt
+    # dropped it and succeeded.
+    cutoff_attempts = [u for u in seen_urls if "last_activity_after=" in u]
+    no_cutoff_attempts = [
+        u
+        for u in seen_urls
+        if "/groups/" in u and "last_activity_after=" not in u
+    ]
+    assert len(cutoff_attempts) == 1
+    assert len(no_cutoff_attempts) >= 1
+    assert [p["id"] for p in projects] == [1]
+    connector.close()
+
+
+def test_gitlab_group_listing_applies_client_side_cutoff_after_fallback():
+    """When the server-side ``last_activity_after`` had to be dropped,
+    the connector applies the cutoff client-side using each project's
+    ``last_activity_at`` field. Dormant projects are filtered out."""
+    fresh_project = {
+        "id": 1,
+        "path_with_namespace": "uts/nbus-aws/fresh",
+        "default_branch": "main",
+        "last_activity_at": "2026-04-26T00:00:00Z",
+    }
+    dormant_project = {
+        "id": 2,
+        "path_with_namespace": "uts/nbus-aws/dormant",
+        "default_branch": "main",
+        "last_activity_at": "2024-01-01T00:00:00Z",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "/groups/" in url and "/projects" in url:
+            if "last_activity_after=" in url:
+                return httpx.Response(500, json={"message": "boom"})
+            return httpx.Response(200, json=[fresh_project, dormant_project])
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    connector = _make_group_connector()
+    connector._client = httpx.Client(
+        base_url="https://gitlab.example/api/v4",
+        headers={"PRIVATE-TOKEN": "glpat-test"},
+        transport=httpx.MockTransport(handler),
+    )
+
+    with patch.object(settings, "gitlab_group_active_window_days", 30):
+        projects = connector._resolve_projects()
+
+    # Dormant project (>30 days old as of 2026-04-27) must be filtered out.
+    assert [p["id"] for p in projects] == [1]
+    connector.close()
+
+
+def test_gitlab_group_listing_drops_order_by_after_second_500():
+    """Some instances 500 on ``order_by=last_activity_at`` itself for
+    large groups. After the cutoff fallback also 500s, the connector
+    must drop the order_by and retry one more time."""
+    project = {
+        "id": 1,
+        "path_with_namespace": "uts/nbus-aws/svc",
+        "default_branch": "main",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "/groups/" in url and "/projects" in url:
+            if "order_by=last_activity_at" in url:
+                return httpx.Response(500, json={"message": "boom"})
+            return httpx.Response(200, json=[project])
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    connector = _make_group_connector()
+    connector._client = httpx.Client(
+        base_url="https://gitlab.example/api/v4",
+        headers={"PRIVATE-TOKEN": "glpat-test"},
+        transport=httpx.MockTransport(handler),
+    )
+
+    with patch.object(settings, "gitlab_group_active_window_days", 30):
+        projects = connector._resolve_projects()
+
+    assert [p["id"] for p in projects] == [1]
+    connector.close()
+
+
+def test_gitlab_group_listing_does_not_retry_on_4xx():
+    """A 401 / 403 / 404 means ``auth bad`` or ``group missing`` --
+    retrying with simpler params is pointless and just delays the
+    error. The connector must surface 4xx immediately, with status
+    code on the exception."""
+    seen_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        seen_urls.append(url)
+        if "/groups/" in url and "/projects" in url:
+            return httpx.Response(404, json={"message": "404 Group Not Found"})
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    connector = _make_group_connector()
+    connector._client = httpx.Client(
+        base_url="https://gitlab.example/api/v4",
+        headers={"PRIVATE-TOKEN": "glpat-test"},
+        transport=httpx.MockTransport(handler),
+    )
+
+    with patch.object(settings, "gitlab_group_active_window_days", 30):
+        with pytest.raises(GitLabAPIError) as exc_info:
+            connector._resolve_projects()
+
+    assert exc_info.value.status_code == 404
+    # Exactly one /groups/.../projects call -- no retry.
+    group_calls = [u for u in seen_urls if "/groups/" in u and "/projects" in u]
+    assert len(group_calls) == 1
     connector.close()
 
 
