@@ -146,7 +146,16 @@ class Settings(BaseSettings):
     model_router: str = "gpt-5-mini"
     model_risk: str = "gpt-5-mini"
     model_synthesis: str = "gpt-5-mini"
-    model_bulk: str = "raptor-mini"
+    # ``model_bulk`` is the high-volume / low-stakes model: per-doc
+    # summaries at ingest time, query expansion variants, HyDE
+    # hypotheticals, agentic refine rewrites. Was ``raptor-mini`` --
+    # which is fine when the LiteLLM proxy carries that alias, but on
+    # proxies that only know the standard OpenAI lineup the bulk
+    # endpoints all 401'd while chat / analysis (using ``gpt-5-mini``)
+    # kept working. Default everyone to ``gpt-5-mini`` so a fresh
+    # proxy ``just works``; override per-deployment via
+    # ``PRISM_MODEL_BULK`` when a cheaper bulk alias is available.
+    model_bulk: str = "gpt-5-mini"
 
 
 settings = Settings()
