@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useSearchMutation } from "../hooks/useSearch";
 import { SearchBar } from "../components/search/SearchBar";
-import { FilterChips } from "../components/search/FilterChips";
+import { FilterChips, type Recency } from "../components/search/FilterChips";
 import { ResultCard } from "../components/search/ResultCard";
 import { ScopeSelector } from "../components/catalog/ScopeSelector";
 import { EmptyState } from "../components/shared/EmptyState";
@@ -10,6 +10,14 @@ import { Skeleton } from "../components/shared/Skeleton";
 import { AlertTriangle, Search } from "lucide-react";
 import { Button } from "../components/shared/Button";
 import { ApiError } from "../lib/api";
+
+function recencyToCutoffISO(recency: Recency): string | null {
+  if (!recency) return null;
+  const now = new Date();
+  const days = recency === "30d" ? 30 : recency === "6mo" ? 180 : 365;
+  const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+  return cutoff.toISOString();
+}
 
 function decodeSearchError(err: unknown): {
   code: string;
@@ -61,15 +69,12 @@ export function SearchPage() {
   const searchState = useSearch({ from: "/search" });
   const search = useSearchMutation();
 
-  const selectedFilters: Record<string, string[]> = {
-    entityTypes: searchState.entityTypes,
-  };
-
   function updateRouteSearch(
     next: {
       q?: string;
       page?: number;
-      entityTypes?: string[];
+      platforms?: string[];
+      recency?: Recency;
       orgId?: string;
       teamIds?: string[];
       serviceIds?: string[];
@@ -82,7 +87,8 @@ export function SearchPage() {
       search: {
         q: next.q?.trim() ? next.q.trim() : undefined,
         page: next.q?.trim() ? Math.max(next.page ?? 1, 1) : undefined,
-        entityTypes: next.entityTypes?.length ? next.entityTypes : undefined,
+        platforms: next.platforms?.length ? next.platforms : undefined,
+        recency: next.recency ? next.recency : undefined,
         orgId: next.orgId || undefined,
         teamIds: next.teamIds?.length ? next.teamIds : undefined,
         serviceIds: next.serviceIds?.length ? next.serviceIds : undefined,
@@ -92,12 +98,10 @@ export function SearchPage() {
 
   function performSearch(nextQuery: string, nextPage = 1) {
     const apiFilters: Record<string, unknown> = {};
-    if (selectedFilters["entityTypes"]?.length) apiFilters["doc_type"] = selectedFilters["entityTypes"];
+    if (searchState.platforms.length) apiFilters["source_platform"] = searchState.platforms;
+    const cutoff = recencyToCutoffISO(searchState.recency);
+    if (cutoff) apiFilters["last_modified_after"] = cutoff;
 
-    // Catalog scope -- pushed down into OpenSearch via the ``scope`` field.
-    // Empty ``orgId`` means un-scoped retrieval (legacy path, the whole
-    // corpus). When set, ``team_ids`` / ``service_ids`` further narrow
-    // within the org. Empty arrays mean "all teams / all services in org".
     const scope = searchState.orgId
       ? {
           org_id: searchState.orgId,
@@ -120,7 +124,8 @@ export function SearchPage() {
       {
         q: nextQuery,
         page: 1,
-        entityTypes: selectedFilters.entityTypes,
+        platforms: searchState.platforms,
+        recency: searchState.recency,
         orgId: searchState.orgId,
         teamIds: searchState.teamIds,
         serviceIds: searchState.serviceIds,
@@ -135,7 +140,8 @@ export function SearchPage() {
       {
         q: searchState.q,
         page: nextPage,
-        entityTypes: selectedFilters.entityTypes,
+        platforms: searchState.platforms,
+        recency: searchState.recency,
         orgId: searchState.orgId,
         teamIds: searchState.teamIds,
         serviceIds: searchState.serviceIds,
@@ -151,23 +157,24 @@ export function SearchPage() {
       return;
     }
     performSearch(trimmedQuery, searchState.page);
-    // Route search state is the source of truth for search.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     searchState.q,
     searchState.page,
-    searchState.entityTypes,
+    searchState.platforms,
+    searchState.recency,
     searchState.orgId,
     searchState.teamIds,
     searchState.serviceIds,
   ]);
 
-  function handleFilterChange(nextSelected: Record<string, string[]>) {
+  function handleFilterChange(next: { platforms: string[]; recency: Recency }) {
     updateRouteSearch(
       {
         q: searchState.q,
         page: 1,
-        entityTypes: nextSelected.entityTypes ?? [],
+        platforms: next.platforms,
+        recency: next.recency,
         orgId: searchState.orgId,
         teamIds: searchState.teamIds,
         serviceIds: searchState.serviceIds,
@@ -185,7 +192,8 @@ export function SearchPage() {
       {
         q: searchState.q,
         page: 1,
-        entityTypes: selectedFilters.entityTypes,
+        platforms: searchState.platforms,
+        recency: searchState.recency,
         orgId: next.org_id ?? "",
         teamIds: next.team_ids,
         serviceIds: next.service_ids,
@@ -328,10 +336,8 @@ export function SearchPage() {
       </div>
 
       <FilterChips
-        filters={{
-          entityTypes: ["wiki", "issue", "merge_request", "pipeline", "readme"],
-        }}
-        selected={selectedFilters}
+        platforms={searchState.platforms}
+        recency={searchState.recency}
         onChange={handleFilterChange}
       />
 

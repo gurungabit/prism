@@ -43,9 +43,14 @@ const rootRoute = createRootRoute({
 const searchRouteSearchSchema = z.object({
   q: z.string().catch("").default(""),
   page: z.coerce.number().int().min(1).catch(1).default(1),
-  entityTypes: z.array(z.string()).catch([]).default([]),
-  // Catalog scope (UUIDs from the declared org/team/service tree). Replaces
-  // the old free-text ``team_hint`` / ``service_hint`` URL params.
+  // Source-platform multi-select chip group.
+  platforms: z.array(z.string()).catch([]).default([]),
+  // Recency single-select. ``""`` means no recency filter.
+  recency: z
+    .enum(["", "30d", "6mo", "1y"])
+    .catch("")
+    .default(""),
+  // Catalog scope (UUIDs from the declared org/team/service tree).
   orgId: z.string().catch("").default(""),
   teamIds: z.array(z.string()).catch([]).default([]),
   serviceIds: z.array(z.string()).catch([]).default([]),
@@ -54,7 +59,8 @@ const searchRouteSearchSchema = z.object({
 const searchRouteDefaultValues = {
   q: "",
   page: 1,
-  entityTypes: [] as string[],
+  platforms: [] as string[],
+  recency: "" as "" | "30d" | "6mo" | "1y",
   orgId: "",
   teamIds: [] as string[],
   serviceIds: [] as string[],

@@ -264,6 +264,14 @@ class HybridSearchEngine:
                 clause = self._build_filter_clause(field, filters[field])
                 if clause:
                     clauses.append(clause)
+        # ``last_modified_after`` is a range filter on the indexed
+        # ``last_modified`` date field. Accepts ISO-8601; missing
+        # timestamps are excluded by the range clause (OpenSearch
+        # default), which is what we want -- "documents updated after
+        # X" should not include docs whose date is unknown.
+        cutoff = filters.get("last_modified_after")
+        if cutoff:
+            clauses.append({"range": {"last_modified": {"gte": str(cutoff)}}})
         return clauses
 
     @staticmethod

@@ -40,6 +40,26 @@ def test_build_filters_supports_multi_select_values():
     )
 
 
+def test_build_filters_supports_last_modified_after_range():
+    engine = HybridSearchEngine(client=object())
+
+    clauses = engine._build_filters(
+        {"last_modified_after": "2026-01-01T00:00:00+00:00"}
+    )
+
+    assert {
+        "range": {"last_modified": {"gte": "2026-01-01T00:00:00+00:00"}}
+    } in clauses
+
+
+def test_build_filters_skips_empty_last_modified_after():
+    engine = HybridSearchEngine(client=object())
+
+    clauses = engine._build_filters({"last_modified_after": ""})
+
+    assert all("range" not in c for c in clauses)
+
+
 def test_scope_filter_builds_nullable_clauses():
     org_id = UUID("11111111-1111-1111-1111-111111111111")
     team_a = UUID("22222222-2222-2222-2222-222222222222")
