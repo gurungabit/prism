@@ -147,6 +147,23 @@ flowchart TD
     REG --> DONE
 ```
 
+### Chunking strategy
+
+The default chunker is heading-aware semantic grouping
+(`PRISM_CHUNKING_STRATEGY=semantic`). It first preserves Markdown-style
+heading boundaries, then embeds paragraph/list units with the configured
+local embedding model and starts a new chunk at sharp topic shifts. The
+same target size and overlap limits still apply, and list-heavy sections
+fall back to item-preserving structural chunking so bullet lists are not
+cut mid-item. If semantic boundary detection fails, ingest logs the
+failure and falls back to the structural paragraph chunker for that
+section.
+
+`PRISM_CHUNKING_STRATEGY=structural` uses the older deterministic path:
+split by heading, split sections into blank-line paragraphs, merge up to
+`PRISM_CHUNK_SIZE_TOKENS`, and use `PRISM_CHUNK_OVERLAP_TOKENS` when
+chunks are split by size.
+
 ### Chunk content shape
 
 Section chunks are not raw doc text — each chunk's `content` is prefixed

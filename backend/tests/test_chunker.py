@@ -1,11 +1,11 @@
-import pytest
+from src.ingestion import chunker as chunker_module
 from src.ingestion.chunker import (
     _split_by_headings,
     _split_list_block,
     _split_paragraphs,
     chunk_document,
 )
-from src.models.document import DocumentRef, DocumentMetadata, RawDocument
+from src.models.document import DocumentMetadata, DocumentRef, RawDocument
 
 
 def _make_doc(content: str, path: str = "test/doc.md") -> RawDocument:
@@ -63,11 +63,75 @@ def test_chunk_preserves_metadata():
 def test_chunk_indexes():
     content = "\n\n".join([f"Paragraph {i} " * 200 for i in range(5)])
     doc = _make_doc(content)
-    chunks = chunk_document("doc-1", content, doc, chunk_size_tokens=100)
+    chunks = chunk_document(
+        "doc-1",
+        content,
+        doc,
+        chunk_size_tokens=100,
+        chunking_strategy="structural",
+    )
     assert len(chunks) > 1
     for i, chunk in enumerate(chunks):
         assert chunk.metadata.chunk_index == i
         assert chunk.metadata.total_chunks == len(chunks)
+
+
+def test_semantic_chunking_splits_topic_shift(monkeypatch):
+    body = "\n\n".join(
+        [
+            "Auth service validates JWT access tokens for customer sessions.",
+            "OAuth login refreshes tokens and owns session revocation.",
+            "Billing service calculates invoices and subscription charges.",
+            "Stripe webhooks reconcile payments and failed-card retries.",
+        ]
+    )
+    doc = _make_doc(body)
+
+    def _fake_embed(units: list[str]) -> list[list[float]]:
+        assert len(units) == 4
+        return [
+            [1.0, 0.0, 0.0],
+            [0.99, 0.01, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.99, 0.01],
+        ]
+
+    monkeypatch.setattr(chunker_module, "_embed_semantic_units", _fake_embed)
+
+    chunks = chunk_document(
+        "doc-1",
+        body,
+        doc,
+        semantic_min_chunk_tokens=1,
+        semantic_breakpoint_threshold=0.2,
+    )
+
+    assert len(chunks) == 2
+    assert "Auth service" in chunks[0].content
+    assert "Billing service" not in chunks[0].content
+    assert "Billing service" in chunks[1].content
+
+
+def test_semantic_chunking_falls_back_to_structural(monkeypatch):
+    body = "\n\n".join(
+        [
+            "Alpha owns the first workflow.",
+            "Beta owns the second workflow.",
+            "Gamma owns the third workflow.",
+        ]
+    )
+    doc = _make_doc(body)
+
+    def _boom(_units: list[str]) -> list[list[float]]:
+        raise RuntimeError("embedding model unavailable")
+
+    monkeypatch.setattr(chunker_module, "_embed_semantic_units", _boom)
+
+    chunks = chunk_document("doc-1", body, doc)
+
+    assert len(chunks) == 1
+    assert "Alpha owns" in chunks[0].content
+    assert "Gamma owns" in chunks[0].content
 
 
 def test_split_by_headings():

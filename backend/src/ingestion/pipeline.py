@@ -35,8 +35,8 @@ from src.catalog import (
     TeamRepository,
 )
 from src.catalog.models import Source
-from src.connectors.base import SourceConfig
-from src.connectors.base import ConnectorRegistry
+from src.config import settings
+from src.connectors.base import ConnectorRegistry, SourceConfig
 from src.ingestion.chunker import chunk_document
 from src.ingestion.deduplicator import ChunkDeduplicator
 from src.ingestion.embedder import embed_chunks
@@ -371,7 +371,18 @@ class IngestionPipeline:
                     )
                     continue
 
-                chunks = chunk_document(document_id, parsed_content, raw_doc)
+                chunks = await asyncio.to_thread(
+                    chunk_document,
+                    document_id,
+                    parsed_content,
+                    raw_doc,
+                    chunk_size_tokens=settings.chunk_size_tokens,
+                    overlap_tokens=settings.chunk_overlap_tokens,
+                    chunking_strategy=settings.chunking_strategy,
+                    semantic_min_chunk_tokens=settings.semantic_chunk_min_tokens,
+                    semantic_breakpoint_percentile=settings.semantic_chunk_breakpoint_percentile,
+                    semantic_breakpoint_threshold=settings.semantic_chunk_breakpoint_threshold,
+                )
                 log.info(
                     "chunked",
                     source=source.name,

@@ -89,7 +89,12 @@ Backend settings use the `PRISM_` prefix.
 | `PRISM_EMBEDDING_QUERY_PREFIX` | `Represent this sentence for searching relevant passages: ` | asymmetric query prefix. Auto-applied for BGE family; E5 family swaps to `query: `; non-matching models receive no prefix. |
 | `PRISM_VECTOR_MIN_SCORE` | `0.0` | floor below which a kNN hit is dropped before RRF merge. The old hard-coded `0.6` was MiniLM-calibrated; with BGE it would silently nuke real matches. |
 | `PRISM_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | reranker (used by analyze and chat paths). |
+| `PRISM_CHUNKING_STRATEGY` | `semantic` | `semantic` groups paragraph/list units by embedding distance inside heading sections; `structural` uses deterministic paragraph merging. |
 | `PRISM_CHUNK_SIZE_TOKENS` | `500` | target chunk size |
+| `PRISM_CHUNK_OVERLAP_TOKENS` | `50` | overlap used when chunks split because they exceed the target size |
+| `PRISM_SEMANTIC_CHUNK_MIN_TOKENS` | `120` | minimum body size before a semantic topic shift can start a new chunk |
+| `PRISM_SEMANTIC_CHUNK_BREAKPOINT_PERCENTILE` | `80.0` | adjacent embedding-distance percentile used as the semantic split cutoff |
+| `PRISM_SEMANTIC_CHUNK_BREAKPOINT_THRESHOLD` | `0.2` | minimum adjacent embedding distance required before a semantic split is allowed |
 | `PRISM_RETRIEVAL_TOP_K` | `30` | default retrieval window (analyze) |
 | `PRISM_RERANK_TOP_K` | `15` | post-rerank chunk count (analyze) |
 | `PRISM_CHAT_RETRIEVAL_TOP_K` | `30` | chat-side retrieval window (was hard-coded 10 pre-overhaul) |

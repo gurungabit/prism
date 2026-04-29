@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -53,8 +55,12 @@ class Settings(BaseSettings):
 
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
+    chunking_strategy: Literal["semantic", "structural"] = "semantic"
     chunk_size_tokens: int = 500
     chunk_overlap_tokens: int = 50
+    semantic_chunk_min_tokens: int = 120
+    semantic_chunk_breakpoint_percentile: float = 80.0
+    semantic_chunk_breakpoint_threshold: float = 0.2
     # Vector-hit floor before RRF merge. ``0.0`` disables. A non-zero
     # cutoff is calibrated per embedding family -- if you change models,
     # retune or leave this at zero.
