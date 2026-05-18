@@ -1,15 +1,18 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { ArrowLeft, CheckCircle2, CircleAlert, Loader2, Plug, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, CircleAlert, Loader2, MoveRight, Plug, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
 
 import { Button } from "../components/shared/Button";
 import { Badge } from "../components/shared/Badge";
 import { Skeleton } from "../components/shared/Skeleton";
 import { EmptyState } from "../components/shared/EmptyState";
 import { useConfirm } from "../components/shared/ConfirmDialog";
+import { Modal } from "../components/shared/Modal";
+import { SingleScopePicker, type SingleScopeValue } from "../components/catalog/SingleScopePicker";
 import {
   useDeclaredSource,
   useDeleteSource,
+  useMoveSource,
   useSourceDocumentsInfinite,
   useSourceStatus,
   useTriggerIngest,
@@ -28,8 +31,14 @@ export function SourceDetailPage() {
   const status = useSourceStatus(sourceId);
   const triggerIngest = useTriggerIngest();
   const deleteSource = useDeleteSource();
+  const moveSource = useMoveSource();
   const navigate = useNavigate();
   const confirm = useConfirm();
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveTarget, setMoveTarget] = useState<SingleScopeValue>({
+    scope: "org",
+    scopeId: "",
+  });
 
   const docsQuery = useSourceDocumentsInfinite(sourceId);
   const documents = useMemo(
@@ -109,6 +118,12 @@ export function SourceDetailPage() {
         ? ({ to: "/orgs/$orgId", params: { orgId: data.org_id } } as const)
         : null;
 
+  function currentScopeValue(): SingleScopeValue {
+    if (data.service_id) return { scope: "service", scopeId: data.service_id };
+    if (data.team_id) return { scope: "team", scopeId: data.team_id };
+    return { scope: "org", scopeId: data.org_id ?? "" };
+  }
+
   return (
     <div className="max-w-[960px] mx-auto px-6 py-8 space-y-8">
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
@@ -153,6 +168,18 @@ export function SourceDetailPage() {
             onClick={() => triggerIngest.mutate({ sourceId, force: true })}
           >
             Force re-index
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={<MoveRight className="w-3.5 h-3.5" />}
+            disabled={isSyncing}
+            onClick={() => {
+              setMoveTarget(currentScopeValue());
+              setMoveOpen(true);
+            }}
+          >
+            Move
           </Button>
           <Button
             variant="ghost"
@@ -307,6 +334,48 @@ export function SourceDetailPage() {
           </div>
         )}
       </section>
+
+      <Modal
+        open={moveOpen}
+        onClose={() => setMoveOpen(false)}
+        title={`Move '${data.name}'`}
+        width="max-w-xl"
+      >
+        <div className="space-y-4">
+          <SingleScopePicker value={moveTarget} onChange={setMoveTarget} />
+          {moveSource.isError && (
+            <div className="flex items-start gap-2 text-[12px] text-rose-600 dark:text-rose-400 bg-rose-50/60 dark:bg-rose-950/30 border border-rose-200/60 dark:border-rose-700/40 rounded-md p-3">
+              <CircleAlert className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+              <span>
+                {moveSource.error instanceof Error
+                  ? moveSource.error.message
+                  : "Failed to move source"}
+              </span>
+            </div>
+          )}
+          <div className="flex justify-end gap-2 pt-2 border-t border-zinc-200/60 dark:border-zinc-700/30">
+            <Button variant="ghost" size="sm" onClick={() => setMoveOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              icon={<MoveRight className="w-3.5 h-3.5" />}
+              loading={moveSource.isPending}
+              disabled={!moveTarget.scopeId}
+              onClick={async () => {
+                await moveSource.mutateAsync({
+                  sourceId,
+                  scope: moveTarget.scope,
+                  scopeId: moveTarget.scopeId,
+                });
+                setMoveOpen(false);
+              }}
+            >
+              Move & re-index
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

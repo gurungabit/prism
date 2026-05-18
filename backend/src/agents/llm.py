@@ -17,7 +17,7 @@ async def llm_call(
     prompt: str,
     system_prompt: str,
     output_schema: type[T],
-    model: str = "gpt-5-mini",
+    model: str = "gpt-5.3-codex-spark",
     max_turns: int = 1,
     agent_name: str = "unknown",
     analysis_id: str = "unknown",

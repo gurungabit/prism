@@ -7,6 +7,12 @@ the `sources` table. A source is attached to exactly one scope: an org, a
 team, or a service. Ingested chunks carry that scope directly so retrieval
 can filter by it later.
 
+Moving a source between scopes uses the same safety contract as deletion:
+PRISM deletes the source's existing OpenSearch chunks first, then updates the
+single scope pointer on the source row, marks the source `pending`, and starts
+a forced re-ingest so new chunks receive the destination scope. Sources in
+`syncing` status cannot be moved.
+
 ```mermaid
 graph LR
     subgraph DECLARE["Declare"]
@@ -252,11 +258,13 @@ total_chunks
 
 ## Retrieval Pipeline
 
-PRISM uses the same `HybridSearchEngine` underneath every surface, but
-the chat path layers extra steps for recall (HyDE, agentic refine)
-that analyze doesn't need:
+PRISM uses the same `HybridSearchEngine` underneath every surface. Analyze
+now runs a discovery + deep-dive sequence so routing can search broadly
+before final evidence is narrowed:
 
-- analysis retrieval (`retrieval_agent`) — expansion + hybrid + agent-typed rerank
+- analysis retrieval (`retrieval_agent`) — org-wide discovery, router-guided
+  deep-dive retrieval, optional HyDE/refine, targeted coverage retries,
+  agent-typed rerank
 - manual search (`/api/search`) — single-shot hybrid
 - chat grounding (`/api/chat`) — expansion + HyDE + hybrid + generic rerank + bounded refine
 - chat source preview fallback
@@ -264,7 +272,7 @@ that analyze doesn't need:
 ```mermaid
 graph LR
     REQ["Query / Requirement Brief"] --> QE["Query Expansion<br/>(5 LLM variants)"]
-    REQ --> HYDE["HyDE<br/>(chat only)"]
+    REQ --> HYDE["HyDE<br/>(chat + optional analysis)"]
     QE --> BM25["BM25 Retrieval<br/>multi-field<br/>section_heading^3,<br/>document_title^2,<br/>content^1"]
     HYDE --> VEC["Vector Retrieval<br/>(KNN)"]
     QE --> VEC
@@ -275,7 +283,7 @@ graph LR
     RRF --> DEDUP["Deduplicate"]
     DEDUP --> TOP["Top-K Candidates"]
     TOP --> RR["Cross-encoder Rerank"]
-    RR --> REFINE{"Weak first pass?<br/>(chat only)"}
+    RR --> REFINE{"Weak first pass?<br/>(chat + optional analysis)"}
     REFINE -->|yes| REWRITE["LLM rewrite<br/>+ one re-search"]
     REFINE -->|no| OUT["Output"]
     REWRITE --> OUT
@@ -292,9 +300,10 @@ graph LR
 ### Vector probe and HyDE
 
 The vector probe is `embed_query(requirement)` by default. When
-`use_hyde=True` is passed (the chat surface flips this on), the LLM
-drafts a 2-4 sentence hypothetical answer in documentation voice and
-the probe becomes `embed_query(requirement + "\n\n" + hypothetical)`.
+`use_hyde=True` is passed (chat, and analysis when
+`PRISM_ANALYSIS_USE_HYDE=true`), the LLM drafts a 2-4 sentence
+hypothetical answer in documentation voice and the probe becomes
+`embed_query(requirement + "\n\n" + hypothetical)`.
 A failed HyDE call falls back to the raw query embedding without
 raising — never blocks retrieval.
 
@@ -318,12 +327,13 @@ index-creation time; `embedder.get_model()` raises
 `EmbeddingDimensionMismatch` at startup if the loaded model and the
 configured dimension disagree.
 
-### Agentic refine (chat only)
+### Agentic refine
 
 After the primary retrieval (expansion + HyDE + hybrid + rerank), the
-chat path peeks at result quality. If the top score is below
-`PRISM_CHAT_REFINE_MAX_SCORE` or there are fewer than
-`PRISM_CHAT_REFINE_MIN_CHUNKS` results, the LLM is asked to rewrite
+chat path peeks at result quality. Analyze uses the same bounded helper
+before specialist agents when `PRISM_ANALYSIS_AGENTIC_REFINE=true`. If
+the top score is below the configured max score or there are fewer than
+the configured minimum chunks, the LLM is asked to rewrite
 the query into a search-friendlier form ("what does X call" → "X
 external integrations") and one more retrieval pass runs. Results
 are merged (refined first, deduped), then reranked against the
@@ -350,12 +360,20 @@ in scope. Service chunks match only their own service.
 
 ### Two-stage routing (analysis)
 
-The router agent picks teams *before* the filter is applied:
+The router agent picks teams/services from broad org evidence, then final
+analysis claims are grounded only on deep-dive evidence:
 
 1. **Routing pass** — search across the full org with no team/service
    filter; rank by relevance to identify candidate teams/services.
 2. **Deep-dive pass** — re-search with `(team_id, service_id)` constraints
    from the routing pass, plus org-wide context.
+3. **Coverage retries** — if the coverage agent reports critical gaps, it
+   returns targeted search strings. Those targeted searches run inside the
+   same deep-dive scope and are merged into the final evidence set.
+
+Discovery chunks are available to the router only. Dependency, risk,
+coverage, citations, synthesis, and `report.all_sources` use deep-dive
+and targeted retry chunks.
 
 ## Service Dependencies
 

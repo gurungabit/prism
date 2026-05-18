@@ -3,15 +3,18 @@
 ## Orchestrator Overview
 
 PRISM runs a LangGraph workflow with PostgreSQL checkpointing. The pipeline
-is mostly linear, with one bounded retrieval loop triggered by the coverage
-agent when critical evidence gaps remain. The planner is the entry point —
-it decides whether the run should be `full` (whole pipeline) or `chat`
-(short follow-up answered from prior thread context only).
+is mostly linear, with a discovery retrieval pass before routing, a
+router-guided deep-dive retrieval pass before specialist agents, and a bounded
+targeted retrieval loop triggered by the coverage agent when critical evidence
+gaps remain. The planner is the entry point — it decides whether the run
+should be `full` (whole pipeline) or `chat` (short follow-up answered from
+prior thread context only).
 
 ```mermaid
 flowchart LR
     P["Plan"]
-    R["Retrieve"]
+    R["Discover"]
+    DR["Deep retrieve"]
     RT["Route"]
     D["Dependencies"]
     RE["Risk + Effort"]
@@ -22,11 +25,11 @@ flowchart LR
 
     P -- full --> R
     P -- chat --> CH
-    R --> RT --> D --> RE --> C --> CI --> S
-    C -. retry when critical gaps remain .-> R
+    R --> RT --> DR --> D --> RE --> C --> CI --> S
+    C -. targeted retry when critical gaps remain .-> DR
 
     classDef step fill:#f59e0b,color:#fff,stroke:none;
-    class P,R,RT,D,RE,C,CI,S,CH step;
+    class P,R,RT,DR,D,RE,C,CI,S,CH step;
 ```
 
 ### Planner
@@ -35,8 +38,9 @@ The planner runs first and:
 
 1. Picks the run mode (`full` vs `chat`) based on the requirement and any
    prior turns in the thread.
-2. Picks the subset of agents to run for `full` mode (`router`,
-   `dependencies`, `risk_effort`, `coverage`).
+2. Picks the specialist agents to run for `full` mode. The orchestrator
+   always keeps `coverage` enabled for full Analyze reports so evidence
+   sufficiency and targeted retry retrieval are not accidentally skipped.
 3. Detects rerun-style follow-ups ("can you run the analysis again?",
    "rerun", "redo") and rewrites the requirement to the original turn-1
    question via `effective_requirement`. The orchestrator then swaps both
@@ -100,13 +104,17 @@ graph TB
 ### Retrieval
 
 Purpose:
-- retrieve the most relevant chunks for the requirement brief
+- discover likely teams/services from broad org evidence
+- retrieve the final deep-dive evidence set for downstream agents
 - expand the query when LLM support is available
 - provide a shared evidence set to downstream agents
 
 Key behaviors:
-- hybrid retrieval over OpenSearch
-- de-duplication by canonical chunk id
+- discovery searches the selected org broadly
+- deep-dive retrieval narrows to routed/user-selected teams/services
+- critical coverage gaps produce targeted retry searches
+- optional HyDE and query refine improve recall
+- de-duplication across rounds by canonical chunk id
 - graceful degradation if evidence is sparse
 
 ### Router
@@ -175,7 +183,8 @@ Purpose:
 Key behaviors:
 - checks whether identified services have supporting docs
 - tracks critical gaps and stale sources
-- can trigger one or more bounded retrieval retries
+- can trigger one or more bounded retrieval retries with specific
+  `targeted_searches`
 
 ### Citations
 
@@ -209,6 +218,8 @@ classDiagram
         +dict analysis_input
         +str search_query
         +list retrieved_chunks
+        +list discovery_chunks
+        +list deep_dive_chunks
         +dict plan
         +list prior_turns
         +str thread_transcript
@@ -220,6 +231,7 @@ classDiagram
         +list stale_sources
         +list conflicts  "always empty; retained for back-compat"
         +int retrieval_rounds
+        +int coverage_retry_rounds
         +list agent_trace
         +dict final_report
         +dict chat_answer

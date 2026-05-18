@@ -76,6 +76,27 @@ GET /api/analyze/{analysis_id}/sources
 POST /api/analyze/{analysis_id}/feedback
 ```
 
+Request body:
+
+```json
+{
+  "section": "coverage",
+  "correct_answer": "The payments service also owns the migration plan.",
+  "reason": "The report missed docs/payments/migration.md"
+}
+```
+
+Feedback is persisted in `analysis_feedback` and can be replayed by the
+offline eval script. Response:
+
+```json
+{
+  "status": "received",
+  "feedback_id": "uuid",
+  "message": "Thank you for the feedback"
+}
+```
+
 ## Search
 
 ### Manual Search (scope-aware)
@@ -388,6 +409,36 @@ retry worker) can try again once OpenSearch is healthy. Org / team /
 service deletes follow the same abort-on-OS-failure pattern for any
 descendant sources they cascade through.
 
+### Move / Re-scope
+
+```http
+POST /api/sources/{source_id}/move
+```
+
+Request body:
+
+```json
+{
+  "scope": "service",
+  "scope_id": "33333333-3333-3333-3333-333333333333"
+}
+```
+
+`scope` is `org` | `team` | `service`. The route rejects sources currently
+`syncing` with `409`, validates the destination scope, deletes the source's
+old OpenSearch chunks first, updates exactly one scope column on the source
+row, marks it `pending`, and starts a forced re-ingest. If OpenSearch cleanup
+fails, the source row is left unchanged and the route returns `503`.
+
+Response:
+
+```json
+{
+  "source": { "id": "uuid", "scope": "service", "status": "pending" },
+  "ingest_started": true
+}
+```
+
 ### Ingest
 
 ```http
@@ -554,6 +605,7 @@ include:
     "documents_retrieved": 30,
     "documents_cited": 5,
     "critical_gaps": [],
+    "targeted_searches": [],
     "stale_sources": []
   },
   "verification_report": {
@@ -562,7 +614,20 @@ include:
     "stale_source_warnings": []
   },
   "impact_matrix": [],
-  "all_sources": []
+  "all_sources": [
+    {
+      "source_path": "platform/auth-service@main:docs/mfa.md",
+      "title": "MFA Design",
+      "url": "https://gitlab.com/...",
+      "section": "Rollout Plan",
+      "sections": ["Rollout Plan"],
+      "score": 0.91,
+      "evidence_role": "cited",
+      "claim_count": 2,
+      "best_section": "Rollout Plan",
+      "retrieval_pass": "deep_dive"
+    }
+  ]
 }
 ```
 
@@ -571,3 +636,5 @@ UI terminology note:
 - `affected_services` is rendered as **Services In Scope**
 - dependency lists are rendered as **Blocking**, **Non-Blocking**, and
   **Contextual** dependencies in the UI
+- `all_sources` is grouped as **Cited**, **Supporting**, and **Additional**
+  using `evidence_role`; cited/verified paths sort before uncited support.

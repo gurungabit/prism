@@ -58,6 +58,12 @@ type SourceDoc = PRISMReport["all_sources"][number];
 type DepEdge = PRISMReport["dependencies"]["blocking"][number];
 type ImpactMatrixRow = PRISMReport["impact_matrix"][number];
 
+const sourceRoleLabels: Record<SourceDoc["evidence_role"], string> = {
+  cited: "Cited",
+  supporting: "Supporting",
+  additional: "Additional",
+};
+
 // Turn inline path references (e.g. "necrokings/RetryOps@main:README.md")
 // inside a narrative string into clickable links when we have a URL for them.
 // We match on the raw path strings from ``report.all_sources`` rather than
@@ -244,9 +250,25 @@ function SourceCard({ source }: { source: SourceDoc }) {
         <Badge variant="neutral" size="sm">
           {source.platform}
         </Badge>
+        <Badge
+          variant={source.evidence_role === "cited" ? "success" : source.evidence_role === "supporting" ? "info" : "neutral"}
+          size="sm"
+        >
+          {sourceRoleLabels[source.evidence_role]}
+        </Badge>
         <span className="text-[10px] font-mono text-zinc-400 dark:text-zinc-500">
           Score: {source.relevance_score.toFixed(2)}
         </span>
+        {source.claim_count > 0 && (
+          <span className="text-[10px] text-zinc-400 dark:text-zinc-500">
+            {source.claim_count} claim{source.claim_count === 1 ? "" : "s"}
+          </span>
+        )}
+        {source.retrieval_pass && (
+          <span className="text-[10px] text-zinc-400 dark:text-zinc-500">
+            {source.retrieval_pass.replace("_", " ")}
+          </span>
+        )}
         {source.is_stale && (
           <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400">
             Stale
@@ -267,6 +289,11 @@ function SourceCard({ source }: { source: SourceDoc }) {
               {i < source.sections_cited.length - 1 && ", "}
             </span>
           ))}
+        </div>
+      )}
+      {source.best_section && source.sections_cited.length === 0 && (
+        <div className="mt-2 text-[10px] text-zinc-400 dark:text-zinc-500">
+          <span className="font-medium">Best section:</span> {source.best_section}
         </div>
       )}
     </>
@@ -503,6 +530,22 @@ export function SingleRunPanel({
       if (s.source_url) map[s.path] = s.source_url;
     }
     return map;
+  }, [report]);
+
+  const sourceGroups = useMemo(() => {
+    const groups: Array<{ role: SourceDoc["evidence_role"]; sources: SourceDoc[] }> = [
+      { role: "cited", sources: [] },
+      { role: "supporting", sources: [] },
+      { role: "additional", sources: [] },
+    ];
+    if (!report) return groups;
+    for (const source of report.all_sources) {
+      const group = groups.find((g) => g.role === source.evidence_role);
+      const target = group ?? groups[2];
+      if (!target) continue;
+      target.sources.push(source);
+    }
+    return groups;
   }, [report]);
 
   async function handleDownloadPdf() {
@@ -1281,48 +1324,70 @@ export function SingleRunPanel({
         (report.all_sources.length > 0 || report.coverage_report) && (
           <CollapsibleSection title="Sources & Coverage" icon={<FileText className="w-3 h-3" />} defaultOpen={false} count={report.all_sources.length}>
             {report.coverage_report && (
-              <div className="flex flex-wrap items-center gap-3 mb-5 py-3 px-4 rounded-lg bg-zinc-50 dark:bg-zinc-800/30 border border-zinc-200/60 dark:border-zinc-700/40">
-                <span className="text-[12px] font-mono text-zinc-700 dark:text-zinc-300">
-                  {report.coverage_report.documents_retrieved} docs
-                  retrieved
-                </span>
-                <span className="text-zinc-300 dark:text-zinc-600">
-                  &middot;
-                </span>
-                <span className="text-[12px] font-mono text-zinc-700 dark:text-zinc-300">
-                  {report.coverage_report.documents_cited} cited
-                </span>
-                <span className="text-zinc-300 dark:text-zinc-600">
-                  &middot;
-                </span>
-                <span className="text-[12px] font-mono text-zinc-700 dark:text-zinc-300">
-                  {report.coverage_report.retrieval_rounds} retrieval
-                  rounds
-                </span>
-                {report.coverage_report.platforms_searched.length > 0 && (
-                  <>
-                    <span className="text-zinc-300 dark:text-zinc-600">
-                      &middot;
-                    </span>
-                    <div className="flex flex-wrap gap-1">
-                      {report.coverage_report.platforms_searched.map(
-                        (p) => (
-                          <Badge key={p} variant="neutral" size="sm">
-                            {p}
-                          </Badge>
-                        ),
-                      )}
-                    </div>
-                  </>
+              <div className="mb-5 space-y-3">
+                <div className="flex flex-wrap items-center gap-3 py-3 px-4 rounded-lg bg-zinc-50 dark:bg-zinc-800/30 border border-zinc-200/60 dark:border-zinc-700/40">
+                  <span className="text-[12px] font-mono text-zinc-700 dark:text-zinc-300">
+                    {report.coverage_report.documents_retrieved} docs
+                    retrieved
+                  </span>
+                  <span className="text-zinc-300 dark:text-zinc-600">
+                    &middot;
+                  </span>
+                  <span className="text-[12px] font-mono text-zinc-700 dark:text-zinc-300">
+                    {report.coverage_report.documents_cited} cited
+                  </span>
+                  <span className="text-zinc-300 dark:text-zinc-600">
+                    &middot;
+                  </span>
+                  <span className="text-[12px] font-mono text-zinc-700 dark:text-zinc-300">
+                    {report.coverage_report.retrieval_rounds} retrieval
+                    rounds
+                  </span>
+                  {report.coverage_report.platforms_searched.length > 0 && (
+                    <>
+                      <span className="text-zinc-300 dark:text-zinc-600">
+                        &middot;
+                      </span>
+                      <div className="flex flex-wrap gap-1">
+                        {report.coverage_report.platforms_searched.map(
+                          (p) => (
+                            <Badge key={p} variant="neutral" size="sm">
+                              {p}
+                            </Badge>
+                          ),
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+                {report.coverage_report.targeted_searches.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {report.coverage_report.targeted_searches.map((query) => (
+                      <Badge key={query} variant="info" size="sm">
+                        {query}
+                      </Badge>
+                    ))}
+                  </div>
                 )}
               </div>
             )}
 
             {report.all_sources.length > 0 && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-5">
-                {report.all_sources.map((source) => (
-                  <SourceCard key={source.id} source={source} />
-                ))}
+              <div className="space-y-5 mb-5">
+                {sourceGroups
+                  .filter((group) => group.sources.length > 0)
+                  .map((group) => (
+                    <div key={group.role} className="space-y-2">
+                      <h3 className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+                        {sourceRoleLabels[group.role]} Sources
+                      </h3>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        {group.sources.map((source) => (
+                          <SourceCard key={`${source.id}-${source.path}`} source={source} />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
               </div>
             )}
 
@@ -1751,5 +1816,3 @@ function FullTurnCard({
     </div>
   );
 }
-
-

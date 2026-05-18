@@ -114,8 +114,9 @@ attach a GitLab source to ingest real docs.
 - [uv](https://docs.astral.sh/uv/)
 - [bun](https://bun.sh/)
 - [Docker](https://www.docker.com/)
-- An OpenAI-compatible LLM endpoint on `http://127.0.0.1:4000/v1`
-  (override with `PRISM_LLM_BASE_URL`)
+- An OpenAI-compatible ChatGPT proxy on `http://127.0.0.1:4100/v1`
+  (run `uv run chatgpt` from the proxy repo, or override with
+  `PRISM_LLM_BASE_URL`)
 - A GitLab personal access token with `read_api` + `read_repository` scopes
   for Phase 1 ingestion. Self-hosted GitLab? Set `PRISM_GITLAB_BASE_URL`.
 
@@ -236,7 +237,7 @@ runtime notes.
 
 | Layer | Technology |
 |---|---|
-| LLM | Configurable via OpenAI-compatible proxy (default `gpt-5-mini`) |
+| LLM | Configurable via OpenAI-compatible proxy (default `gpt-5.3-codex-spark`) |
 | Search | OpenSearch 2.17 hybrid retrieval with scope field pushdown |
 | Knowledge Store | PostgreSQL relational tables (declared catalog + `kg_*` + registry) |
 | Persistence | PostgreSQL 16 |

@@ -8,7 +8,10 @@
 | uv | latest | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | bun | 1.3+ | `curl -fsSL https://bun.sh/install \| bash` |
 | Docker | 24+ | [docker.com](https://docker.com) |
-| LLM proxy | running on `127.0.0.1:4000` | OpenAI-compatible endpoint |
+| LLM proxy | running on `127.0.0.1:4100` | ChatGPT OpenAI-compatible endpoint |
+
+For the companion ChatGPT proxy, run `uv run chatgpt` from the proxy
+repo before starting PRISM.
 
 ## Local Setup
 
@@ -70,6 +73,7 @@ Current backend suite covers:
 - chunking
 - connectors
 - deduplication
+- feedback-backed analysis eval case export
 - hybrid search + scope-filter clause shapes (incl. unresolved-service match-nothing)
 - ingestion pipeline (registry, tombstone)
 - orchestrator behavior
@@ -91,6 +95,17 @@ cd ui
 ./node_modules/.bin/tsc -b
 ./node_modules/.bin/vite build
 ```
+
+### Feedback-Backed Eval Export
+
+```bash
+uv run python scripts/eval_feedback.py --limit 50
+```
+
+The script emits JSON cases from persisted `analysis_feedback` rows,
+including the original requirement, report source paths, and operator
+correction. It is intentionally offline-friendly so retrieval/report quality
+changes can replay real misses without creating new production data.
 
 ## Project Structure
 
@@ -232,6 +247,7 @@ If the report model changes, update both:
 | Retrieval top-k | `config.py` | Higher values improve recall and cost more |
 | Rerank top-k | `config.py` | Controls how many chunks each agent sees |
 | Retrieval rounds | `config.py` | More rounds improve coverage, slow analysis |
+| Analysis HyDE/refine | `config.py` (`analysis_use_hyde`, `analysis_agentic_refine`, `analysis_refine_*`) | Improves recall on sparse analysis queries, can add LLM latency |
 | Staleness threshold | `config.py` | Controls stale-source warnings |
 | Search page size | `backend/src/api/routes.py` | Changes search pagination size |
 | Group active window | `config.py` (`gitlab_group_active_window_days`) | How recently a project must have been active to be ingested |

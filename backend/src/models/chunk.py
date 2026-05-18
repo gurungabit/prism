@@ -52,3 +52,4 @@ class Chunk(BaseModel):
     metadata: ChunkMetadata
     canonical_chunk_id: str | None = None
     score: float = 0.0
+    retrieval_pass: str = ""

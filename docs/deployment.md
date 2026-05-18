@@ -47,7 +47,7 @@ When using `./run.sh`, the effective developer-facing ports are:
 | OpenSearch Dashboards | `5601` |
 | PostgreSQL | `5432` |
 | Redis | `6379` |
-| LLM proxy | `4000` |
+| LLM proxy | `4100` |
 
 ## Service Configuration
 
@@ -107,23 +107,30 @@ Backend settings use the `PRISM_` prefix.
 | `PRISM_CHAT_AGENTIC_REFINE` | `true` | one bounded re-search when the first pass looks weak |
 | `PRISM_CHAT_REFINE_MAX_SCORE` | `0.05` | trigger threshold (top score) for the refiner |
 | `PRISM_CHAT_REFINE_MIN_CHUNKS` | `3` | trigger threshold (chunk count) for the refiner |
+| `PRISM_ANALYSIS_USE_HYDE` | `true` | enable HyDE expansion for analysis discovery, deep-dive, and targeted retry retrieval |
+| `PRISM_ANALYSIS_AGENTIC_REFINE` | `true` | run one bounded query-refine retry when an analysis retrieval pass looks weak |
+| `PRISM_ANALYSIS_REFINE_MAX_SCORE` | `0.05` | trigger threshold (top score) for the analysis refiner |
+| `PRISM_ANALYSIS_REFINE_MIN_CHUNKS` | `3` | trigger threshold (chunk count) for the analysis refiner |
 | `PRISM_HYDE_MAX_CHARS` | `600` | cap on the hypothetical answer concatenated onto the vector probe |
 | `PRISM_ENABLE_DOCUMENT_SUMMARIES` | `true` | emit one LLM-summary chunk per document at ingest. Big recall win for "list X" queries; costs one bulk-model call per doc. |
 | `PRISM_DOCUMENT_SUMMARY_MAX_INPUT_CHARS` | `12000` | truncation cap for the summarizer input |
 | `PRISM_MAX_RETRIEVAL_ROUNDS` | `2` | max coverage retries |
 | `PRISM_STALENESS_THRESHOLD_DAYS` | `365` | stale source threshold |
-| `PRISM_LLM_BASE_URL` | `http://127.0.0.1:4000/v1` | OpenAI-compatible LLM endpoint |
+| `PRISM_LLM_BASE_URL` | `http://127.0.0.1:4100/v1` | OpenAI-compatible ChatGPT proxy endpoint |
 | `PRISM_LLM_API_KEY` | `local-dev` | API key sent to the proxy |
-| `PRISM_MODEL_ROUTER` | `gpt-5-mini` | routing model |
-| `PRISM_MODEL_RISK` | `gpt-5-mini` | risk model |
-| `PRISM_MODEL_SYNTHESIS` | `gpt-5-mini` | synthesis model |
-| `PRISM_MODEL_BULK` | `raptor-mini` | general analysis model |
+| `PRISM_MODEL_ROUTER` | `gpt-5.3-codex-spark` | routing model |
+| `PRISM_MODEL_RISK` | `gpt-5.3-codex-spark` | risk model |
+| `PRISM_MODEL_SYNTHESIS` | `gpt-5.3-codex-spark` | synthesis model |
+| `PRISM_MODEL_BULK` | `gpt-5.3-codex-spark` | general analysis model |
 
 ## LLM Proxy
 
-PRISM talks to any OpenAI-compatible endpoint via `PRISM_LLM_BASE_URL`. The default is a local proxy listening on `http://127.0.0.1:4000/v1` that handles upstream auth and serves aliases such as `gpt-5-mini`, `raptor-mini`, `claude-opus-4.6-fast`, `gemini-2.5-pro`, and `minimax-2.5`.
+PRISM talks to any OpenAI-compatible endpoint via `PRISM_LLM_BASE_URL`. The default is the local ChatGPT subscription proxy listening on `http://127.0.0.1:4100/v1`, using the `gpt-5.3-codex-spark` alias for routing, risk, synthesis, and bulk analysis calls.
 
-Start the proxy before running PRISM. Any OpenAI-compatible server works — swap the base URL, API key, and model aliases via the `PRISM_*` env vars above.
+Start the proxy before running PRISM. For the companion ChatGPT proxy,
+run `uv run chatgpt` from the proxy repo. Any OpenAI-compatible server
+works -- swap the base URL, API key, and model aliases via the `PRISM_*`
+env vars above.
 
 If the proxy is unreachable, PRISM still runs but degrades:
 

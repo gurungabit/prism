@@ -402,13 +402,31 @@ async def get_sources(analysis_id: str):
 
 @router.post("/analyze/{analysis_id}/feedback")
 async def submit_feedback(analysis_id: str, feedback: FeedbackRequest):
+    repo = await AnalysisRepository.create()
+    try:
+        if await repo.get(analysis_id) is None:
+            raise HTTPException(status_code=404, detail="Analysis not found")
+        row = await repo.insert_feedback(
+            analysis_id,
+            section=feedback.section,
+            correct_answer=feedback.correct_answer,
+            reason=feedback.reason,
+        )
+    finally:
+        await repo.close()
+
     log.info(
         "feedback_received",
         analysis_id=analysis_id,
+        feedback_id=str(row["id"]),
         section=feedback.section,
         correction=feedback.correct_answer[:100],
     )
-    return {"status": "received", "message": "Feedback recorded for future improvement"}
+    return {
+        "status": "received",
+        "feedback_id": str(row["id"]),
+        "message": "Feedback recorded for future evaluation",
+    }
 
 
 @router.post("/search")

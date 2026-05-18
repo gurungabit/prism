@@ -31,6 +31,10 @@ export const SourceDocumentSchema = z.object({
   last_modified: z.string().default(""),
   is_stale: z.boolean().default(false),
   sections_cited: z.array(z.string()).default([]),
+  evidence_role: z.enum(["cited", "supporting", "additional"]).default("additional"),
+  claim_count: z.number().default(0),
+  best_section: z.string().default(""),
+  retrieval_pass: z.string().default(""),
 });
 
 // ── Team Routing ──────────────────────────────────────
@@ -164,6 +168,7 @@ export const CoverageReportSchema = z.object({
   gaps: z.array(z.string()).default([]),
   critical_gaps: z.array(z.string()).default([]),
   stale_sources: z.array(z.string()).default([]),
+  targeted_searches: z.array(z.string()).default([]),
   retrieval_rounds: z.number().default(0),
 });
 

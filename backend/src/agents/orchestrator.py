@@ -89,6 +89,9 @@ class OrchestratorState(TypedDict):
     analysis_brief: str
     search_query: str
     retrieved_chunks: list
+    discovery_chunks: list
+    deep_dive_chunks: list
+    retrieval_result: AgentResult | None
     # Planner decision -- which downstream agents to run. Keys mirror
     # ``PlanOutput.agents_to_run``. Empty/missing means "run all" for
     # backwards compatibility with callers that don't hit the planner.
@@ -108,6 +111,7 @@ class OrchestratorState(TypedDict):
     stale_sources: list
     conflicts: list
     retrieval_rounds: int
+    coverage_retry_rounds: int
     agent_trace: list
     final_report: dict | None
     # Chat-mode runs populate this instead of final_report.
@@ -286,9 +290,14 @@ async def plan_node(state: OrchestratorState) -> dict:
             # explicitly asked for coverage-only.
             agents = list(dict.fromkeys(plan.agents_to_run))
             if not agents:
-                agents = ["router"]
+                agents = ["coverage"] if plan.question_type == "coverage" else ["router"]
             elif "router" not in agents and plan.question_type != "coverage":
                 agents = ["router"] + agents
+            # Full Analyze reports should always audit evidence sufficiency.
+            # The planner still decides the expensive specialist agents, but
+            # coverage is also what powers targeted retry retrieval.
+            if "coverage" not in agents:
+                agents.append("coverage")
         plan_dict = {
             "mode": mode,
             "question_type": plan.question_type,
@@ -439,7 +448,15 @@ async def _emit_skipped(analysis_id: str, agent: str, reason: str) -> None:
 
 
 async def retrieve_node(state: OrchestratorState) -> dict:
-    return checkpoint_safe_update(await retrieval_agent(state))
+    return checkpoint_safe_update(await retrieval_agent(state, mode="discovery"))
+
+
+async def deep_retrieve_node(state: OrchestratorState) -> dict:
+    return checkpoint_safe_update(await retrieval_agent(state, mode="deep_dive"))
+
+
+async def coverage_retry_node(state: OrchestratorState) -> dict:
+    return checkpoint_safe_update(await retrieval_agent(state, mode="coverage_retry"))
 
 
 async def chat_node(state: OrchestratorState) -> dict:
@@ -591,7 +608,7 @@ async def citation_node(state: OrchestratorState) -> dict:
 
 
 def should_retrieve_more(state: OrchestratorState) -> str:
-    if state.get("retrieval_rounds", 0) >= settings.max_retrieval_rounds:
+    if state.get("coverage_retry_rounds", 0) >= settings.max_retrieval_rounds:
         return "citations"
 
     coverage = state.get("coverage_report")
@@ -607,8 +624,12 @@ def should_retrieve_more(state: OrchestratorState) -> str:
     if isinstance(cov_data, dict):
         critical_gaps = cov_data.get("critical_gaps", [])
         if critical_gaps:
-            log.info("coverage_gap_detected", gaps=len(critical_gaps), round=state.get("retrieval_rounds", 0))
-            return "retrieve"
+            log.info(
+                "coverage_gap_detected",
+                gaps=len(critical_gaps),
+                retry_round=state.get("coverage_retry_rounds", 0),
+            )
+            return "coverage_retry"
 
     return "citations"
 
@@ -926,6 +947,7 @@ def _build_report(
             gaps=cd.get("gaps", []),
             critical_gaps=cd.get("critical_gaps", []),
             stale_sources=cd.get("stale_sources", []),
+            targeted_searches=cd.get("targeted_searches", []),
             retrieval_rounds=state.get("retrieval_rounds", 0),
         )
         if not report.coverage_report.stale_sources and stale_sources:
@@ -989,14 +1011,46 @@ def _build_report(
 
     report.impact_matrix = _build_impact_matrix(report)
 
-    seen_paths = set()
+    citation_counts = _citation_path_counts(report, claims_by_doc)
+    if citation_counts and report.coverage_report.documents_cited == 0:
+        report.coverage_report.documents_cited = len(citation_counts)
+
+    report.all_sources = _rank_source_documents(
+        chunks,
+        url_by_path=url_by_path,
+        citation_counts=citation_counts,
+        claims_by_doc=claims_by_doc,
+        stale_sources=stale_sources,
+    )
+
+    return report
+
+
+def _rank_source_documents(
+    chunks: list[Chunk],
+    *,
+    url_by_path: dict[str, str],
+    citation_counts: dict[str, int],
+    claims_by_doc: dict[str, list[str]],
+    stale_sources: list[str],
+) -> list[SourceDocument]:
+    best_by_path: dict[str, Chunk] = {}
     for chunk in chunks:
         path = chunk.metadata.source_path
-        if path in seen_paths:
+        if not path:
             continue
-        seen_paths.add(path)
+        current = best_by_path.get(path)
+        if current is None or chunk.score > current.score:
+            best_by_path[path] = chunk
+
+    ranked: list[SourceDocument] = []
+    for path, chunk in best_by_path.items():
+        claim_count = citation_counts.get(path, 0)
+        evidence_role = "cited" if claim_count else "supporting"
+        if not claim_count and chunk.score <= 0:
+            evidence_role = "additional"
         modified = chunk.metadata.last_modified.strftime("%Y-%m-%d") if chunk.metadata.last_modified else ""
-        report.all_sources.append(
+        ranked.append(
             SourceDocument(
                 id=chunk.document_id,
                 path=path,
@@ -1006,10 +1060,60 @@ def _build_report(
                 last_modified=modified,
                 is_stale=any(path in s for s in stale_sources),
                 sections_cited=claims_by_doc.get(path, [])[:5],
+                evidence_role=evidence_role,
+                claim_count=claim_count,
+                best_section=chunk.metadata.section_heading,
+                retrieval_pass=chunk.retrieval_pass,
             )
         )
 
-    return report
+    role_rank = {"cited": 0, "supporting": 1, "additional": 2}
+    ranked.sort(
+        key=lambda source: (
+            role_rank.get(source.evidence_role, 3),
+            -source.claim_count,
+            -source.relevance_score,
+            source.path.lower(),
+        )
+    )
+    return ranked
+
+
+def _citation_path_counts(
+    report: PRISMReport,
+    claims_by_doc: dict[str, list[str]],
+) -> dict[str, int]:
+    counts = {path: len(claims) for path, claims in claims_by_doc.items() if path}
+
+    def add(citations: list[Citation]) -> None:
+        for citation in citations or []:
+            path = citation.document_path
+            if not path:
+                continue
+            counts[path] = counts.get(path, 0) + 1
+
+    if report.team_routing:
+        add(report.team_routing.primary_team.sources)
+        for team in report.team_routing.supporting_teams:
+            add(team.sources)
+    for service in report.affected_services:
+        add(service.sources)
+    for group in (
+        report.dependencies.blocking,
+        report.dependencies.impacted,
+        report.dependencies.informational,
+    ):
+        for edge in group:
+            add(edge.sources)
+    for edge in [*report.team_blast_radius.upstream, *report.team_blast_radius.downstream]:
+        add(edge.sources)
+    if report.risk_assessment:
+        for risk in report.risk_assessment.risks:
+            add(risk.sources)
+    if report.effort_estimate:
+        add(report.effort_estimate.sources)
+
+    return counts
 
 
 def _build_impact_matrix(report: PRISMReport) -> list[ImpactMatrixRow]:
@@ -1183,6 +1287,8 @@ def create_workflow() -> StateGraph:
 
     workflow.add_node("plan", plan_node)
     workflow.add_node("retrieve", retrieve_node)
+    workflow.add_node("deep_retrieve", deep_retrieve_node)
+    workflow.add_node("coverage_retry", coverage_retry_node)
     workflow.add_node("route", route_node)
     workflow.add_node("dependencies", deps_node)
     workflow.add_node("risk_effort", risk_node)
@@ -1202,15 +1308,17 @@ def create_workflow() -> StateGraph:
     workflow.add_edge("chat", END)
 
     workflow.add_edge("retrieve", "route")
-    workflow.add_edge("route", "dependencies")
+    workflow.add_edge("route", "deep_retrieve")
+    workflow.add_edge("deep_retrieve", "dependencies")
     workflow.add_edge("dependencies", "risk_effort")
     workflow.add_edge("risk_effort", "coverage")
 
     workflow.add_conditional_edges(
         "coverage",
         should_retrieve_more,
-        {"retrieve": "retrieve", "citations": "citations"},
+        {"coverage_retry": "coverage_retry", "citations": "citations"},
     )
+    workflow.add_edge("coverage_retry", "coverage")
 
     workflow.add_edge("citations", "synthesize")
     workflow.add_edge("synthesize", END)
@@ -1354,6 +1462,9 @@ async def run_analysis(
         "analysis_brief": analysis_brief,
         "search_query": search_query,
         "retrieved_chunks": [],
+        "discovery_chunks": [],
+        "deep_dive_chunks": [],
+        "retrieval_result": None,
         "plan": None,
         "prior_turns": prior_turns,
         "team_routing": None,
@@ -1364,6 +1475,7 @@ async def run_analysis(
         "stale_sources": [],
         "conflicts": [],
         "retrieval_rounds": 0,
+        "coverage_retry_rounds": 0,
         "agent_trace": [],
         "final_report": None,
         "chat_answer": None,

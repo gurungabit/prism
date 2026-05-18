@@ -54,6 +54,239 @@ def _make_chunk(content: str, chunk_id: str, score: float = 0.0) -> Chunk:
     )
 
 
+def test_full_plan_keeps_coverage_enabled():
+    from src.agents.orchestrator import plan_node
+    from src.agents.schemas import PlanOutput
+
+    async def _run():
+        with (
+            patch(
+                "src.agents.orchestrator._generate_and_persist_title",
+                new=AsyncMock(),
+            ),
+            patch(
+                "src.agents.orchestrator.llm_call",
+                new=AsyncMock(
+                    return_value=PlanOutput(
+                        mode="full",
+                        question_type="ownership",
+                        agents_to_run=["router"],
+                        reasoning="ownership only",
+                    )
+                ),
+            ),
+        ):
+            return await plan_node(
+                {
+                    "analysis_id": "analysis-1",
+                    "requirement": "Who owns checkout step-up?",
+                    "prior_turns": [],
+                }
+            )
+
+    result = asyncio.run(_run())
+
+    assert result["plan"]["agents_to_run"] == ["router", "coverage"]
+
+
+def test_analysis_coverage_retry_uses_targeted_searches():
+    from src.agents.retrieval_agent import _queries_for_mode
+
+    state = {
+        "coverage_report": {
+            "status": "success",
+            "data": {
+                "targeted_searches": [
+                    "auth-service runbook",
+                    "mobile auth integration",
+                    "",
+                ]
+            },
+        }
+    }
+
+    assert _queries_for_mode(state, "fallback query", mode="coverage_retry") == [
+        "auth-service runbook",
+        "mobile auth integration",
+    ]
+
+
+def test_analysis_retrieval_update_keeps_discovery_out_of_deep_dive():
+    from src.agents.result import AgentResult
+    from src.agents.retrieval_agent import _retrieval_update
+
+    discovery = [_make_chunk("discovery", "discovery", score=0.1)]
+    deep = [_make_chunk("deep", "deep", score=0.2)]
+
+    state = {
+        "retrieved_chunks": discovery,
+        "deep_dive_chunks": [],
+    }
+
+    update = _retrieval_update(
+        state,
+        deep,
+        mode="deep_dive",
+        retrieval_rounds=2,
+        retrieval_result=AgentResult(status="success"),
+    )
+
+    assert [c.chunk_id for c in update["retrieved_chunks"]] == ["deep"]
+
+
+def test_analysis_scope_filter_discovery_vs_deep_dive():
+    from src.agents.retrieval_agent import _scope_filter_for_mode
+
+    state = {
+        "analysis_input": {
+            "org_id": "org-1",
+            "team_ids": ["team-1"],
+            "service_ids": ["service-1"],
+        }
+    }
+
+    discovery = asyncio.run(_scope_filter_for_mode(state, mode="discovery"))
+    deep = asyncio.run(_scope_filter_for_mode(state, mode="deep_dive"))
+
+    assert discovery == {"org_id": "org-1"}
+    assert deep == {
+        "org_id": "org-1",
+        "team_ids": ["team-1"],
+        "service_ids": ["service-1"],
+    }
+
+
+def test_coverage_manifest_includes_paths_and_excerpts():
+    from src.agents.coverage_agent import _build_source_manifest
+
+    chunk = _make_chunk("auth-core owns step-up policy and challenge_completed.", "c1", 0.8)
+    chunk.metadata.source_path = "auth-core/README.md"
+    chunk.metadata.document_title = "Auth Core"
+    chunk.metadata.section_heading = "Overview"
+    chunk.retrieval_pass = "deep_dive"
+
+    manifest = _build_source_manifest([chunk])
+
+    assert "path=auth-core/README.md" in manifest
+    assert "section=Overview" in manifest
+    assert "retrieval_pass=deep_dive" in manifest
+    assert "auth-core owns step-up policy" in manifest
+
+
+def test_citation_normalizer_resolves_source_labels():
+    from src.agents.citation_agent import _normalize_verification_sources
+    from src.agents.schemas import CitationVerification, VerifiedClaim
+
+    chunk = _make_chunk("auth-core owns AuthChallengeV2.", "c1", 0.8)
+    chunk.metadata.source_path = "auth-core/README.md"
+    verification = CitationVerification(
+        verified_claims=[
+            VerifiedClaim(
+                claim="auth-core owns AuthChallengeV2",
+                supporting_doc="Source 1",
+                excerpt="auth-core owns AuthChallengeV2",
+            )
+        ],
+        unsupported_claims=[],
+    )
+
+    normalized = _normalize_verification_sources(verification, [chunk])
+
+    assert normalized.verified_claims[0].supporting_doc == "auth-core/README.md"
+    assert normalized.unsupported_claims == []
+
+
+def test_citation_fallback_uses_structured_agent_sources():
+    from src.agents.citation_agent import _fallback_verification_from_agent_outputs
+    from src.agents.result import AgentResult
+
+    chunk = _make_chunk("Identity Platform owns auth-core.", "c1", 0.8)
+    chunk.metadata.source_path = "auth-core/README.md"
+    routing = AgentResult(
+        status="success",
+        data={
+            "primary_team": {
+                "name": "Identity Platform",
+                "justification": "auth-core owns step-up policy.",
+                "key_sources": ["auth-core/README.md"],
+            }
+        },
+    )
+
+    fallback = _fallback_verification_from_agent_outputs(
+        routing,
+        None,
+        None,
+        [chunk],
+    )
+
+    assert fallback.verified_claims
+    assert fallback.verified_claims[0].supporting_doc == "auth-core/README.md"
+    assert fallback.unsupported_claims == []
+
+
+def test_citation_empty_valid_result_uses_structured_fallback():
+    from src.agents.citation_agent import _add_structured_fallback_claims
+    from src.agents.result import AgentResult
+    from src.agents.schemas import CitationVerification
+
+    chunk = _make_chunk("Identity Platform owns auth-core.", "c1", 0.8)
+    chunk.metadata.source_path = "auth-core/README.md"
+    routing = AgentResult(
+        status="success",
+        data={
+            "primary_team": {
+                "name": "Identity Platform",
+                "justification": "auth-core owns step-up policy.",
+                "key_sources": ["auth-core/README.md"],
+            }
+        },
+    )
+    verification = CitationVerification(
+        verified_claims=[],
+        unsupported_claims=["Validator could not verify owner."],
+    )
+
+    updated = _add_structured_fallback_claims(
+        verification,
+        routing,
+        None,
+        None,
+        [chunk],
+    )
+
+    assert updated.verified_claims
+    assert updated.verified_claims[0].supporting_doc == "auth-core/README.md"
+    assert updated.unsupported_claims == ["Validator could not verify owner."]
+
+
+def test_ranked_report_sources_prioritize_cited_paths():
+    from src.agents.orchestrator import _rank_source_documents
+
+    supporting = _make_chunk("support", "support", score=0.9)
+    supporting.metadata.source_path = "repo/support.md"
+    supporting.metadata.section_heading = "Support"
+    supporting.retrieval_pass = "deep_dive"
+
+    cited = _make_chunk("cited", "cited", score=0.1)
+    cited.metadata.source_path = "repo/cited.md"
+    cited.metadata.section_heading = "Cited"
+    cited.retrieval_pass = "coverage_retry"
+
+    ranked = _rank_source_documents(
+        [supporting, cited],
+        url_by_path={},
+        citation_counts={"repo/cited.md": 2},
+        claims_by_doc={"repo/cited.md": ["claim"]},
+        stale_sources=[],
+    )
+
+    assert [source.path for source in ranked] == ["repo/cited.md", "repo/support.md"]
+    assert ranked[0].evidence_role == "cited"
+    assert ranked[0].claim_count == 2
+    assert ranked[0].retrieval_pass == "coverage_retry"
+
+
 def _drain(events_gen):
     async def _run():
         out = []

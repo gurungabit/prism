@@ -12,6 +12,8 @@ from src.observability.logging import get_logger
 log = get_logger("analysis_store")
 
 CREATE_TABLE_SQL = """
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 CREATE TABLE IF NOT EXISTS analyses (
     analysis_id TEXT PRIMARY KEY,
     requirement TEXT NOT NULL,
@@ -51,6 +53,17 @@ UPDATE analyses SET thread_id = analysis_id WHERE thread_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_analyses_created_at ON analyses(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_analyses_status ON analyses(status);
 CREATE INDEX IF NOT EXISTS idx_analyses_thread_id ON analyses(thread_id);
+
+CREATE TABLE IF NOT EXISTS analysis_feedback (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    analysis_id TEXT NOT NULL REFERENCES analyses(analysis_id) ON DELETE CASCADE,
+    section TEXT NOT NULL,
+    correct_answer TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_analysis_feedback_analysis_id ON analysis_feedback(analysis_id);
+CREATE INDEX IF NOT EXISTS idx_analysis_feedback_created_at ON analysis_feedback(created_at DESC);
 """
 
 
@@ -152,6 +165,45 @@ class AnalysisRepository:
                 analysis_id,
                 title,
             )
+
+    async def insert_feedback(
+        self,
+        analysis_id: str,
+        *,
+        section: str,
+        correct_answer: str,
+        reason: str = "",
+    ) -> dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO analysis_feedback (
+                    analysis_id, section, correct_answer, reason
+                )
+                VALUES ($1, $2, $3, $4)
+                RETURNING id, analysis_id, section, correct_answer, reason, created_at
+                """,
+                analysis_id,
+                section,
+                correct_answer,
+                reason,
+            )
+            return dict(row)
+
+    async def list_feedback(self, limit: int = 100) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT f.id, f.analysis_id, f.section, f.correct_answer,
+                       f.reason, f.created_at, a.requirement, a.report
+                FROM analysis_feedback f
+                JOIN analyses a ON a.analysis_id = f.analysis_id
+                ORDER BY f.created_at DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+            return [dict(r) for r in rows]
 
     async def list_thread(self, thread_id: str) -> list[dict]:
         """Return every run in a thread, oldest first."""

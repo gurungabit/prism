@@ -8,6 +8,7 @@ pass a ``SourceConfig`` with a ``path``.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -408,7 +409,7 @@ def test_gitlab_group_listing_falls_back_when_server_500s_on_cutoff():
         "name": "svc-a",
         "path_with_namespace": "uts/nbus-aws/svc-a",
         "default_branch": "main",
-        "last_activity_at": "2026-04-01T00:00:00Z",
+        "last_activity_at": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
     }
     seen_urls: list[str] = []
 
@@ -454,7 +455,7 @@ def test_gitlab_group_listing_applies_client_side_cutoff_after_fallback():
         "id": 1,
         "path_with_namespace": "uts/nbus-aws/fresh",
         "default_branch": "main",
-        "last_activity_at": "2026-04-26T00:00:00Z",
+        "last_activity_at": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
     }
     dormant_project = {
         "id": 2,

@@ -66,7 +66,7 @@ def format_chunks_for_prompt(
             f"type={safe_fence_attr(meta.doc_type)} "
             f"modified={safe_fence_attr(meta.last_modified)}"
         )
-        header = f"<<<DOC {attrs}>>>"
+        header = f"[Source {i}] <<<DOC {attrs}>>>"
         body = _neutralize_fence_markers(chunk.content[:max_chars_per_chunk])
         parts.append(f"{header}\n{body}\n<<<END_DOC>>>")
     return "\n\n".join(parts)
@@ -94,13 +94,13 @@ AVAILABLE AGENTS:
   the question asks about impact, cascading changes, or service relationships.
 - "risk_effort": assesses implementation risk + effort estimates. Needed when
   the question asks how risky, how long, how many engineers, or scope-related.
-- "coverage": audits whether the retrieved evidence is sufficient. Include it
-  when the question spans multiple teams/services and gaps would be costly.
+- "coverage": audits whether the retrieved evidence is sufficient and powers
+  targeted retry retrieval. Include it for full Analyze runs.
 
 CLASSIFICATION (for "full" mode, pick the best fit):
-- "ownership": "who owns X", "which team should handle Y" -> router only
-- "dependency": "what depends on X", "impact of changing Y" -> router + dependencies
-- "risk_effort": "how risky", "how long", effort/scope questions -> router + risk_effort
+- "ownership": "who owns X", "which team should handle Y" -> router + coverage
+- "dependency": "what depends on X", "impact of changing Y" -> router + dependencies + coverage
+- "risk_effort": "how risky", "how long", effort/scope questions -> router + risk_effort + coverage
 - "impact": broad "how do I ship Z" questions -> router + dependencies + risk_effort + coverage
 - "coverage": "what docs do we have on X" -> coverage only
 - "general": anything else that doesn't map cleanly -> router only
@@ -109,6 +109,7 @@ RULES:
 - If there is no prior context (first turn), mode MUST be "full".
 - Always include "router" for "full" mode unless the question is purely
   about coverage.
+- Always include "coverage" for "full" mode.
 - For "chat" mode, leave agents_to_run empty -- they won't run anyway.
 - Prefer the minimum viable set -- don't stack agents speculatively.
 - Give a short (one sentence) reason.
@@ -268,7 +269,9 @@ RULES:
 - For each team/service mentioned in the analysis, verify relevant docs were found.
 - Identify critical gaps: services with zero documentation found.
 - Identify stale sources: documents not updated in over 12 months.
-- Suggest targeted searches for any gaps found.
+- Fill ``targeted_searches`` with 1-5 short search queries for critical gaps.
+  Keep proper nouns verbatim; each query should be specific enough to find
+  missing service/team/runbook evidence in internal docs.
 - Flag if any major platform (GitLab, SharePoint, Excel, OneNote) had zero results.
 - Distinguish critical gaps (analysis may be wrong) from acceptable gaps (minor).
 
@@ -426,6 +429,7 @@ def build_coverage_prompt(
     analysis_summary: str,
     platforms: str,
     doc_stats: str,
+    source_manifest: str,
     thread_transcript: str = "",
 ) -> str:
     return f"""Verify analysis coverage for this requirement.
@@ -441,6 +445,9 @@ PLATFORMS SEARCHED:
 
 DOCUMENT STATISTICS:
 {doc_stats}
+
+RETRIEVED SOURCE MANIFEST:
+{source_manifest}
 
 Identify gaps, stale sources, and missing platform coverage."""
 
@@ -537,11 +544,11 @@ Call out what appears well-supported vs uncertain, and include a concise data-qu
 # rule duplicated inline.
 #
 # Prompts that don't ingest retrieved chunks (planner, turn-title,
-# rolling-summary, citation validation against an already-formatted
-# reference list) intentionally don't need the rule.
+# rolling-summary) intentionally don't need the rule.
 ROUTER_SYSTEM_PROMPT = f"{ROUTER_SYSTEM_PROMPT}\n\n{UNTRUSTED_DOCS_RULE}"
 DEPENDENCY_SYSTEM_PROMPT = f"{DEPENDENCY_SYSTEM_PROMPT}\n\n{UNTRUSTED_DOCS_RULE}"
 RISK_EFFORT_SYSTEM_PROMPT = f"{RISK_EFFORT_SYSTEM_PROMPT}\n\n{UNTRUSTED_DOCS_RULE}"
 COVERAGE_SYSTEM_PROMPT = f"{COVERAGE_SYSTEM_PROMPT}\n\n{UNTRUSTED_DOCS_RULE}"
+CITATION_SYSTEM_PROMPT = f"{CITATION_SYSTEM_PROMPT}\n\n{UNTRUSTED_DOCS_RULE}"
 SYNTHESIS_SYSTEM_PROMPT = f"{SYNTHESIS_SYSTEM_PROMPT}\n\n{UNTRUSTED_DOCS_RULE}"
 CHAT_ANSWER_SYSTEM_PROMPT = f"{CHAT_ANSWER_SYSTEM_PROMPT}\n\n{UNTRUSTED_DOCS_RULE}"

@@ -187,6 +187,10 @@ class SourceDocument(BaseModel):
     last_modified: str = ""
     is_stale: bool = False
     sections_cited: list[str] = []
+    evidence_role: Literal["cited", "supporting", "additional"] = "additional"
+    claim_count: int = 0
+    best_section: str = ""
+    retrieval_pass: str = ""
 
 
 class CoverageReport(BaseModel):
@@ -196,6 +200,7 @@ class CoverageReport(BaseModel):
     gaps: list[str] = []
     critical_gaps: list[str] = []
     stale_sources: list[str] = []
+    targeted_searches: list[str] = []
     retrieval_rounds: int = 0
 
 

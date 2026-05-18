@@ -117,6 +117,7 @@ class CoverageOutput(BaseModel):
     gaps: list[str] = []
     critical_gaps: list[str] = []
     stale_sources: list[str] = []
+    targeted_searches: list[str] = []
     reasoning: str = ""
 
 

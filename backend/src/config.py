@@ -68,6 +68,10 @@ class Settings(BaseSettings):
 
     retrieval_top_k: int = 30
     rerank_top_k: int = 15
+    analysis_use_hyde: bool = True
+    analysis_agentic_refine: bool = True
+    analysis_refine_max_score: float = 0.05
+    analysis_refine_min_chunks: int = 3
 
     chat_retrieval_top_k: int = 30
     chat_query_expansion: bool = True
@@ -97,13 +101,13 @@ class Settings(BaseSettings):
     dedup_threshold: float = 0.8
     dedup_num_perm: int = 128
 
-    llm_base_url: str = "http://127.0.0.1:4000/v1"
+    llm_base_url: str = "http://127.0.0.1:4100/v1"
     llm_api_key: str = "local-dev"
 
-    model_router: str = "gpt-5-mini"
-    model_risk: str = "gpt-5-mini"
-    model_synthesis: str = "gpt-5-mini"
-    model_bulk: str = "gpt-5-mini"
+    model_router: str = "gpt-5.3-codex-spark"
+    model_risk: str = "gpt-5.3-codex-spark"
+    model_synthesis: str = "gpt-5.3-codex-spark"
+    model_bulk: str = "gpt-5.3-codex-spark"
 
 
 settings = Settings()

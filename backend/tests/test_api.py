@@ -211,6 +211,223 @@ def test_source_delete_aborts_on_opensearch_failure(client: TestClient):
     fake_repo.delete.assert_awaited_once()
 
 
+def test_source_move_rejects_syncing_source(client: TestClient):
+    import uuid as _uuid
+
+    from src.api import catalog_routes
+    from src.catalog.models import SourceStatus
+
+    fake_source_id = _uuid.uuid4()
+
+    class _FakeSource:
+        id = fake_source_id
+        status = SourceStatus.SYNCING
+
+    fake_source_repo = AsyncMock()
+    fake_source_repo.get = AsyncMock(return_value=_FakeSource())
+    fake_source_repo.close = AsyncMock()
+
+    with patch.object(
+        catalog_routes.SourceRepository,
+        "create",
+        new=AsyncMock(return_value=fake_source_repo),
+    ), patch.object(
+        catalog_routes.OrgRepository,
+        "create",
+        new=AsyncMock(return_value=AsyncMock(close=AsyncMock())),
+    ), patch.object(
+        catalog_routes.TeamRepository,
+        "create",
+        new=AsyncMock(return_value=AsyncMock(close=AsyncMock())),
+    ), patch.object(
+        catalog_routes.ServiceRepository,
+        "create",
+        new=AsyncMock(return_value=AsyncMock(close=AsyncMock())),
+    ):
+        resp = client.post(
+            f"/api/sources/{fake_source_id}/move",
+            json={"scope": "org", "scope_id": str(_uuid.uuid4())},
+        )
+
+    assert resp.status_code == 409
+
+
+def test_source_move_cleans_chunks_and_starts_force_ingest(client: TestClient):
+    from datetime import UTC, datetime
+    import uuid as _uuid
+
+    from src.api import catalog_routes
+    from src.catalog.models import Source, SourceKind, SourceScope, SourceStatus
+
+    fake_source_id = _uuid.uuid4()
+    old_org_id = _uuid.uuid4()
+    new_org_id = _uuid.uuid4()
+
+    existing = Source(
+        id=fake_source_id,
+        org_id=old_org_id,
+        kind=SourceKind.GITLAB,
+        name="docs",
+        config={"project_path": "org/docs"},
+        secret_ref=None,
+        status=SourceStatus.READY,
+        last_ingested_at=None,
+        last_error=None,
+        created_at=datetime.now(UTC),
+    )
+    moved = existing.model_copy(update={"org_id": new_org_id, "status": SourceStatus.PENDING})
+
+    fake_source_repo = AsyncMock()
+    fake_source_repo.get = AsyncMock(return_value=existing)
+    fake_source_repo.move_scope = AsyncMock(return_value=moved)
+    fake_source_repo.close = AsyncMock()
+
+    fake_org_repo = AsyncMock()
+    fake_org_repo.get = AsyncMock(return_value=object())
+    fake_org_repo.close = AsyncMock()
+
+    with patch.object(
+        catalog_routes.SourceRepository,
+        "create",
+        new=AsyncMock(return_value=fake_source_repo),
+    ), patch.object(
+        catalog_routes.OrgRepository,
+        "create",
+        new=AsyncMock(return_value=fake_org_repo),
+    ), patch.object(
+        catalog_routes.TeamRepository,
+        "create",
+        new=AsyncMock(return_value=AsyncMock(close=AsyncMock())),
+    ), patch.object(
+        catalog_routes.ServiceRepository,
+        "create",
+        new=AsyncMock(return_value=AsyncMock(close=AsyncMock())),
+    ), patch.object(
+        catalog_routes,
+        "delete_by_source_id",
+        return_value=3,
+    ) as delete_chunks, patch.object(
+        catalog_routes,
+        "_run_ingest",
+        new=AsyncMock(),
+    ) as run_ingest:
+        resp = client.post(
+            f"/api/sources/{fake_source_id}/move",
+            json={"scope": "org", "scope_id": str(new_org_id)},
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ingest_started"] is True
+    delete_chunks.assert_called_once()
+    fake_source_repo.move_scope.assert_awaited_once_with(
+        fake_source_id,
+        scope=SourceScope.ORG,
+        scope_id=new_org_id,
+    )
+    run_ingest.assert_awaited_once_with(fake_source_id, True)
+
+
+def test_source_move_aborts_when_chunk_cleanup_fails(client: TestClient):
+    from datetime import UTC, datetime
+    import uuid as _uuid
+
+    from src.api import catalog_routes
+    from src.catalog.models import Source, SourceKind, SourceStatus
+
+    fake_source_id = _uuid.uuid4()
+    old_org_id = _uuid.uuid4()
+    new_org_id = _uuid.uuid4()
+
+    existing = Source(
+        id=fake_source_id,
+        org_id=old_org_id,
+        kind=SourceKind.GITLAB,
+        name="docs",
+        config={"project_path": "org/docs"},
+        secret_ref=None,
+        status=SourceStatus.READY,
+        last_ingested_at=None,
+        last_error=None,
+        created_at=datetime.now(UTC),
+    )
+
+    fake_source_repo = AsyncMock()
+    fake_source_repo.get = AsyncMock(return_value=existing)
+    fake_source_repo.move_scope = AsyncMock()
+    fake_source_repo.close = AsyncMock()
+
+    fake_org_repo = AsyncMock()
+    fake_org_repo.get = AsyncMock(return_value=object())
+    fake_org_repo.close = AsyncMock()
+
+    with patch.object(
+        catalog_routes.SourceRepository,
+        "create",
+        new=AsyncMock(return_value=fake_source_repo),
+    ), patch.object(
+        catalog_routes.OrgRepository,
+        "create",
+        new=AsyncMock(return_value=fake_org_repo),
+    ), patch.object(
+        catalog_routes.TeamRepository,
+        "create",
+        new=AsyncMock(return_value=AsyncMock(close=AsyncMock())),
+    ), patch.object(
+        catalog_routes.ServiceRepository,
+        "create",
+        new=AsyncMock(return_value=AsyncMock(close=AsyncMock())),
+    ), patch.object(
+        catalog_routes,
+        "delete_by_source_id",
+        side_effect=RuntimeError("OpenSearch down"),
+    ), patch.object(
+        catalog_routes,
+        "_run_ingest",
+        new=AsyncMock(),
+    ) as run_ingest:
+        resp = client.post(
+            f"/api/sources/{fake_source_id}/move",
+            json={"scope": "org", "scope_id": str(new_org_id)},
+        )
+
+    assert resp.status_code == 503
+    assert "OpenSearch cleanup failed" in resp.json()["detail"]
+    fake_source_repo.move_scope.assert_not_awaited()
+    run_ingest.assert_not_awaited()
+
+
+def test_feedback_endpoint_persists_feedback(client: TestClient):
+    from src.api import routes
+
+    fake_repo = AsyncMock()
+    fake_repo.get = AsyncMock(return_value={"analysis_id": "a-1"})
+    fake_repo.insert_feedback = AsyncMock(
+        return_value={
+            "id": "11111111-1111-1111-1111-111111111111",
+            "analysis_id": "a-1",
+        }
+    )
+    fake_repo.close = AsyncMock()
+
+    with patch.object(
+        routes.AnalysisRepository,
+        "create",
+        new=AsyncMock(return_value=fake_repo),
+    ):
+        resp = client.post(
+            "/api/analyze/a-1/feedback",
+            json={
+                "section": "executive_summary",
+                "correct_answer": "Auth owns this.",
+                "reason": "Wrong owner in report",
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["feedback_id"] == "11111111-1111-1111-1111-111111111111"
+    fake_repo.insert_feedback.assert_awaited_once()
+
+
 # ---------- file-based source path validation across routes ----------
 #
 # Round 11 made the local-source jail default-on AND extended path

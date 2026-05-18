@@ -56,7 +56,7 @@ def test_format_chunks_wraps_each_chunk_in_fences():
     """
     chunks = [_malicious_chunk("clean content")]
     out = format_chunks_for_prompt(chunks)
-    assert '<<<DOC source_id="1"' in out
+    assert '[Source 1] <<<DOC source_id="1"' in out
     assert "<<<END_DOC>>>" in out
     # Header carries metadata the model can cite without parsing the body.
     assert 'path="docs/evil.md"' in out
@@ -316,7 +316,7 @@ def test_format_chunks_metadata_with_quotes_and_newlines_does_not_break_header()
 
     # Header lives on its own line (keeps the model's parsing easy).
     first_line = out.split("\n", 1)[0]
-    assert first_line.startswith("<<<DOC ")
+    assert first_line.startswith("[Source 1] <<<DOC ")
     assert first_line.endswith(">>>")
     # JSON-encoded values escape quotes + newlines, so the dangerous
     # characters land as ``\\"`` / ``\\n`` strings in the header

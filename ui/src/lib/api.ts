@@ -519,6 +519,19 @@ export function updateSource(
   });
 }
 
+export function moveSource(
+  sourceId: string,
+  body: { scope: SourceScope; scope_id: string },
+) {
+  return request<{ source: DeclaredSource; ingest_started: boolean }>(
+    `/api/sources/${sourceId}/move`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
 export function deleteSource(sourceId: string) {
   return request<{ status: string }>(`/api/sources/${sourceId}`, { method: "DELETE" });
 }

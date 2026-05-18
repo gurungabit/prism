@@ -235,6 +235,38 @@ class SourceRepository(CatalogRepo):
 
                 return _row_to_source(row)
 
+    async def move_scope(
+        self,
+        source_id: UUID,
+        *,
+        scope: SourceScope,
+        scope_id: UUID,
+    ) -> Source | None:
+        org_id = scope_id if scope == SourceScope.ORG else None
+        team_id = scope_id if scope == SourceScope.TEAM else None
+        service_id = scope_id if scope == SourceScope.SERVICE else None
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE sources
+                SET org_id = $2,
+                    team_id = $3,
+                    service_id = $4,
+                    status = 'pending',
+                    last_error = NULL
+                WHERE id = $1
+                  AND status != 'syncing'
+                RETURNING id, org_id, team_id, service_id, kind, name, config,
+                          secret_ref, status, last_ingested_at, last_error, created_at
+                """,
+                source_id,
+                org_id,
+                team_id,
+                service_id,
+            )
+            return _row_to_source(row) if row else None
+
     async def delete(self, source_id: UUID) -> bool:
         async with self.pool.acquire() as conn:
             result = await conn.execute(

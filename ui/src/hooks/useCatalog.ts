@@ -29,6 +29,7 @@ import {
   listServicesForTeam,
   listSourceDocuments,
   listTeamsForOrg,
+  moveSource,
   triggerSourceIngest,
   updateOrg,
   updateService,
@@ -37,6 +38,7 @@ import {
   validateSource,
   type CreateSourceBody,
   type ValidateSourceBody,
+  type SourceScope,
 } from "../lib/api";
 
 // Org/team/service mutations affect the same derived topology caches.
@@ -418,6 +420,27 @@ export function useUpdateSource() {
     }) => updateSource(sourceId, body),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["declared-source", vars.sourceId] });
+      qc.invalidateQueries({ queryKey: ["declared-sources"] });
+      qc.invalidateQueries({ queryKey: ["source-documents", vars.sourceId] });
+    },
+  });
+}
+
+export function useMoveSource() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      sourceId,
+      scope,
+      scopeId,
+    }: {
+      sourceId: string;
+      scope: SourceScope;
+      scopeId: string;
+    }) => moveSource(sourceId, { scope, scope_id: scopeId }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["declared-source", vars.sourceId] });
+      qc.invalidateQueries({ queryKey: ["declared-source-status", vars.sourceId] });
       qc.invalidateQueries({ queryKey: ["declared-sources"] });
       qc.invalidateQueries({ queryKey: ["source-documents", vars.sourceId] });
     },

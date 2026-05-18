@@ -91,7 +91,7 @@ def _delete_opensearch_for_sources(
             detail=(
                 f"OpenSearch cleanup failed for {len(failures)} of "
                 f"{len(source_ids)} descendant source(s); aborting "
-                f"catalog delete to avoid orphaned chunks. Retry once "
+                f"catalog mutation to avoid orphaned chunks. Retry once "
                 f"OpenSearch is healthy."
             ),
         )
@@ -145,6 +145,11 @@ class SourceUpdateBody(BaseModel):
     token: str | None = None
 
 
+class SourceMoveBody(BaseModel):
+    scope: SourceScope
+    scope_id: UUID
+
+
 class SourceValidateBody(BaseModel):
     """Inputs for the "test connection" action in the source wizard."""
 
@@ -174,6 +179,25 @@ class GitLabGroupSearchBody(BaseModel):
 
 
 # ---------- orgs ----------
+
+
+async def _validate_source_scope_target(
+    *,
+    scope: SourceScope,
+    scope_id: UUID,
+    org_repo: OrgRepository,
+    team_repo: TeamRepository,
+    service_repo: ServiceRepository,
+) -> None:
+    if scope == SourceScope.ORG:
+        if await org_repo.get(scope_id) is None:
+            raise HTTPException(status_code=404, detail="Organization not found for source scope")
+    elif scope == SourceScope.TEAM:
+        if await team_repo.get(scope_id) is None:
+            raise HTTPException(status_code=404, detail="Team not found for source scope")
+    elif scope == SourceScope.SERVICE:
+        if await service_repo.get(scope_id) is None:
+            raise HTTPException(status_code=404, detail="Service not found for source scope")
 
 
 @router.post("/orgs")
@@ -536,15 +560,13 @@ async def create_source(body: SourceCreateBody) -> Source:
     try:
         # Validate the scope target exists before inserting. Nice error
         # messages beat raw CHECK-constraint violations.
-        if body.scope == SourceScope.ORG:
-            if await org_repo.get(body.scope_id) is None:
-                raise HTTPException(status_code=404, detail="Organization not found for source scope")
-        elif body.scope == SourceScope.TEAM:
-            if await team_repo.get(body.scope_id) is None:
-                raise HTTPException(status_code=404, detail="Team not found for source scope")
-        elif body.scope == SourceScope.SERVICE:
-            if await service_repo.get(body.scope_id) is None:
-                raise HTTPException(status_code=404, detail="Service not found for source scope")
+        await _validate_source_scope_target(
+            scope=body.scope,
+            scope_id=body.scope_id,
+            org_repo=org_repo,
+            team_repo=team_repo,
+            service_repo=service_repo,
+        )
 
         # File-based connectors: validate the path now so a malformed
         # source can't sit in Postgres waiting for ingest to surface
@@ -696,6 +718,62 @@ async def update_source(source_id: UUID, body: SourceUpdateBody) -> Source:
         return updated
     finally:
         await source_repo.close()
+
+
+@router.post("/sources/{source_id}/move")
+async def move_source(
+    source_id: UUID,
+    body: SourceMoveBody,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    org_repo = await OrgRepository.create()
+    team_repo = await TeamRepository.create()
+    service_repo = await ServiceRepository.create()
+    source_repo = await SourceRepository.create()
+    try:
+        source = await source_repo.get(source_id)
+        if source is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        if source.status == SourceStatus.SYNCING:
+            raise HTTPException(
+                status_code=409,
+                detail="Source is already syncing; wait for it to finish or fail",
+            )
+
+        await _validate_source_scope_target(
+            scope=body.scope,
+            scope_id=body.scope_id,
+            org_repo=org_repo,
+            team_repo=team_repo,
+            service_repo=service_repo,
+        )
+
+        # Chunks carry immutable scope fields in OpenSearch. Delete them
+        # before the Postgres move so a cleanup failure leaves the old row
+        # retryable and avoids stale scoped chunks.
+        _delete_opensearch_for_sources([source.id], scope=f"source-move={source_id}")
+
+        moved = await source_repo.move_scope(
+            source_id,
+            scope=body.scope,
+            scope_id=body.scope_id,
+        )
+        if moved is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Source became syncing before it could be moved",
+            )
+    finally:
+        await source_repo.close()
+        await service_repo.close()
+        await team_repo.close()
+        await org_repo.close()
+
+    background_tasks.add_task(_run_ingest, source_id, True)
+    return {
+        "source": moved.model_dump(mode="json"),
+        "ingest_started": True,
+    }
 
 
 @router.delete("/sources/{source_id}")

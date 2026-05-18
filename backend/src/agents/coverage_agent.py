@@ -33,6 +33,7 @@ async def coverage_agent(state: dict[str, Any]) -> dict[str, Any]:
     analysis_summary = _build_analysis_summary(routing, dependencies, risk_assessment)
     platforms = _count_platforms(chunks)
     doc_stats = _build_doc_stats(chunks)
+    source_manifest = _build_source_manifest(chunks)
 
     try:
         prompt = build_coverage_prompt(
@@ -40,6 +41,7 @@ async def coverage_agent(state: dict[str, Any]) -> dict[str, Any]:
             analysis_summary,
             platforms,
             doc_stats,
+            source_manifest,
             thread_transcript=state.get("thread_transcript") or "",
         )
 
@@ -68,6 +70,7 @@ async def coverage_agent(state: dict[str, Any]) -> dict[str, Any]:
                             "platforms": coverage.platforms_searched,
                             "gaps": coverage.gaps[:6],
                             "critical_gaps": coverage.critical_gaps[:4],
+                            "targeted_searches": coverage.targeted_searches[:5],
                             "needs_retry": len(coverage.critical_gaps) > 0,
                             "reasoning": coverage.reasoning or "",
                         },
@@ -147,3 +150,37 @@ def _build_doc_stats(chunks: list[Chunk]) -> str:
 
     unique_docs = len(set(c.document_id for c in chunks))
     return f"Total chunks: {len(chunks)}, Unique documents: {unique_docs}, Types: {json.dumps(doc_types)}"
+
+
+def _build_source_manifest(chunks: list[Chunk]) -> str:
+    best_by_path: dict[str, Chunk] = {}
+    for chunk in chunks:
+        path = chunk.metadata.source_path
+        if not path:
+            continue
+        current = best_by_path.get(path)
+        if current is None or chunk.score > current.score:
+            best_by_path[path] = chunk
+
+    if not best_by_path:
+        return "No source paths available."
+
+    lines = []
+    for path, chunk in sorted(
+        best_by_path.items(),
+        key=lambda item: (-item[1].score, item[0].lower()),
+    )[:80]:
+        meta = chunk.metadata
+        modified = meta.last_modified.isoformat() if meta.last_modified else "unknown"
+        excerpt = " ".join(chunk.content.split())[:280]
+        lines.append(
+            "- "
+            f"path={path}; title={meta.document_title or 'untitled'}; "
+            f"section={meta.section_heading or 'n/a'}; "
+            f"platform={meta.source_platform}; type={meta.doc_type}; "
+            f"modified={modified}; score={chunk.score:.3f}; "
+            f"retrieval_pass={chunk.retrieval_pass or 'unknown'}; "
+            f"excerpt={excerpt}"
+        )
+
+    return "\n".join(lines)
