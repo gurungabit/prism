@@ -3,12 +3,12 @@
 ## Orchestrator Overview
 
 PRISM runs a LangGraph workflow with PostgreSQL checkpointing. The pipeline
-is mostly linear, with a discovery retrieval pass before routing, a
-router-guided deep-dive retrieval pass before specialist agents, and a bounded
-targeted retrieval loop triggered by the coverage agent when critical evidence
-gaps remain. The planner is the entry point — it decides whether the run
-should be `full` (whole pipeline) or `chat` (short follow-up answered from
-prior thread context only).
+has a discovery retrieval pass before routing, a router-guided deep-dive
+retrieval pass before specialist agents, a fan-out/fan-in section for
+dependency and risk analysis, and a bounded targeted retrieval loop triggered
+by the coverage agent when critical evidence gaps remain. The planner is the
+entry point — it decides whether the run should be `full` (whole pipeline) or
+`chat` (short follow-up answered from prior thread context only).
 
 ```mermaid
 flowchart LR
@@ -19,17 +19,23 @@ flowchart LR
     D["Dependencies"]
     RE["Risk + Effort"]
     C["Coverage"]
+    CR["Coverage retry retrieval"]
     CI["Citations"]
     S["Synthesis"]
     CH["Chat answer"]
 
     P -- full --> R
     P -- chat --> CH
-    R --> RT --> DR --> D --> RE --> C --> CI --> S
-    C -. targeted retry when critical gaps remain .-> DR
+    R --> RT --> DR
+    DR --> D
+    DR --> RE
+    D --> C
+    RE --> C
+    C -- sufficient evidence --> CI --> S
+    C -- critical gaps remain --> CR --> C
 
     classDef step fill:#f59e0b,color:#fff,stroke:none;
-    class P,R,RT,DR,D,RE,C,CI,S,CH step;
+    class P,R,RT,DR,D,RE,C,CR,CI,S,CH step;
 ```
 
 ### Planner
@@ -60,11 +66,13 @@ The planner runs first and:
 ```mermaid
 graph TB
     subgraph FLOW["LangGraph Workflow"]
-        R["Retrieval"]
+        R["Discovery Retrieval"]
         RT["Router"]
+        DR["Deep-Dive Retrieval"]
         D["Dependencies"]
         RE["Risk + Effort"]
         C["Coverage"]
+        CR["Coverage Retry"]
         CI["Citations"]
         S["Synthesis"]
     end
@@ -76,17 +84,27 @@ graph TB
         LLM["LLM Proxy<br/>OpenAI-compatible"]
     end
 
-    R --> RT --> D --> RE --> C --> CI --> S
-    C -. bounded retry .-> R
+    R --> RT --> DR
+    DR --> D
+    DR --> RE
+    D --> C
+    RE --> C
+    C --> CI --> S
+    C -. bounded targeted retrieval .-> CR
+    CR -. retry evidence .-> C
 
     R --> OS
     R --> RRK
+    DR --> OS
+    DR --> RRK
     RT --> N4J
     RT --> LLM
     D --> N4J
     D --> LLM
     RE --> LLM
     C --> LLM
+    CR --> OS
+    CR --> RRK
     CI --> LLM
     S --> LLM
 
@@ -94,7 +112,7 @@ graph TB
     classDef store fill:#4f46e5,color:#fff,stroke:none;
     classDef ai fill:#e11d48,color:#fff,stroke:none;
 
-    class R,RT,D,RE,C,CI,S flow;
+    class R,RT,DR,D,RE,C,CR,CI,S flow;
     class OS,N4J,RRK store;
     class LLM ai;
 ```

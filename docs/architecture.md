@@ -276,11 +276,20 @@ sequenceDiagram
 
     API->>PG: create history row
     API->>ORC: run analysis
-    ORC->>RET: retrieve relevant chunks
+    ORC->>RET: discovery retrieval
     ORC->>RTR: pick primary + supporting team(s)
-    ORC->>DEP: map dependency edges from declared graph
-    ORC->>RSK: assess risk + effort
+    ORC->>RET: deep-dive retrieval for routed scope
+    par Specialist fan-out
+        ORC->>DEP: map dependency edges from declared graph
+    and
+        ORC->>RSK: assess risk + effort
+    end
     ORC->>COV: check gaps + stale evidence
+    loop While critical gaps remain
+        COV-->>ORC: targeted_searches
+        ORC->>RET: coverage retry retrieval
+        ORC->>COV: re-check gaps + stale evidence
+    end
     ORC->>CIT: verify claims against sources
     ORC->>SYN: build final report narrative
     ORC->>PG: persist completed report
