@@ -224,6 +224,17 @@ successfully.
 wipes every chunk for the source first via `delete_by_source_id`, skipping
 the content-hash check.
 
+### Live ingest progress
+
+Each source run writes a best-effort progress snapshot to
+`source_ingest_progress`. The ingest trigger initializes the row as `queued`
+when it claims the source, and the pipeline advances it through
+`listing`, `fetching`, `summarizing`, `embedding`, `indexing`, and `saving`
+with total/processed/indexed/skipped/failed counters plus the current source
+path when one is active. `GET /api/sources/{id}/status` returns that snapshot
+alongside the live `document_count`, so the UI can show progress before the
+registry-backed document count changes.
+
 ## Chunk Metadata
 
 Each chunk indexed in OpenSearch:

@@ -674,11 +674,18 @@ async def get_source_status(source_id: UUID) -> dict[str, Any]:
         source = await source_repo.get(source_id)
         if source is None:
             raise HTTPException(status_code=404, detail="Source not found")
+        progress = await source_repo.get_ingest_progress(source_id)
+        if progress is not None:
+            for key in ("started_at", "updated_at", "finished_at"):
+                value = progress.get(key)
+                progress[key] = value.isoformat() if value else None
         return {
             "source_id": str(source.id),
             "status": source.status,
             "last_ingested_at": source.last_ingested_at.isoformat() if source.last_ingested_at else None,
             "last_error": source.last_error,
+            "document_count": await source_repo.count_docs(source_id),
+            "progress": progress,
         }
     finally:
         await source_repo.close()
@@ -855,6 +862,7 @@ async def _run_ingest(source_id: UUID, force: bool) -> None:
                     _SourceStatus.ERROR,
                     last_error=f"Ingest crashed: {str(e)[:400]}",
                 )
+                await repo.finish_ingest_progress(source_id, phase="failed")
             finally:
                 await repo.close()
         except Exception as recover_err:  # noqa: BLE001

@@ -440,6 +440,19 @@ export interface SourceDocument {
   source_url: string | null;
 }
 
+export interface SourceIngestProgress {
+  phase: string;
+  total_documents: number;
+  processed_documents: number;
+  indexed_documents: number;
+  skipped_documents: number;
+  failed_documents: number;
+  current_path: string | null;
+  started_at: string | null;
+  updated_at: string | null;
+  finished_at: string | null;
+}
+
 export function listDeclaredSources(params?: {
   orgId?: string;
   teamId?: string;
@@ -490,6 +503,8 @@ export function getSourceStatus(sourceId: string) {
     status: SourceStatus;
     last_ingested_at: string | null;
     last_error: string | null;
+    document_count: number;
+    progress: SourceIngestProgress | null;
   }>(`/api/sources/${sourceId}/status`);
 }
 

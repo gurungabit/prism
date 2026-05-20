@@ -17,6 +17,7 @@ import {
   useSourceStatus,
   useTriggerIngest,
 } from "../hooks/useCatalog";
+import type { SourceIngestProgress } from "../lib/api";
 
 const kindLabels: Record<string, string> = {
   gitlab: "GitLab",
@@ -40,7 +41,11 @@ export function SourceDetailPage() {
     scopeId: "",
   });
 
-  const docsQuery = useSourceDocumentsInfinite(sourceId);
+  const liveStatusForDocuments = status.data?.status ?? source.data?.status;
+  const docsQuery = useSourceDocumentsInfinite(
+    sourceId,
+    liveStatusForDocuments === "syncing" || liveStatusForDocuments === "pending",
+  );
   const documents = useMemo(
     () => docsQuery.data?.pages.flatMap((p) => p.documents) ?? [],
     [docsQuery.data],
@@ -109,6 +114,8 @@ export function SourceDetailPage() {
   const data = source.data;
   const liveStatus = status.data?.status ?? data.status;
   const isSyncing = liveStatus === "syncing" || liveStatus === "pending";
+  const liveDocumentCount = status.data?.document_count ?? data.document_count ?? documentsTotal;
+  const progress = status.data?.progress ?? null;
 
   const parentLink = data.service_id
     ? ({ to: "/services/$serviceId", params: { serviceId: data.service_id } } as const)
@@ -146,7 +153,7 @@ export function SourceDetailPage() {
             <StatusBadge status={liveStatus} />
           </div>
           <p className="text-[12px] text-zinc-400 dark:text-zinc-500 mt-1">
-            {data.document_count} documents ingested
+            {liveDocumentCount} documents ingested
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
@@ -212,6 +219,10 @@ export function SourceDetailPage() {
         </div>
       )}
 
+      {isSyncing && (
+        <IngestProgressPanel progress={progress} documentCount={liveDocumentCount} />
+      )}
+
       <section className="space-y-3">
         <h2 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
           Metadata
@@ -261,7 +272,9 @@ export function SourceDetailPage() {
           </div>
         ) : documents.length === 0 ? (
           <p className="text-[12px] text-zinc-400 dark:text-zinc-500">
-            No documents yet. Hit "Sync now" to kick off the first ingestion.
+            {isSyncing
+              ? "Documents will appear here as they are saved."
+              : "No documents yet. Hit \"Sync now\" to kick off the first ingestion."}
           </p>
         ) : (
           <div className="space-y-0">
@@ -378,6 +391,97 @@ export function SourceDetailPage() {
       </Modal>
     </div>
   );
+}
+
+function IngestProgressPanel({
+  progress,
+  documentCount,
+}: {
+  progress: SourceIngestProgress | null;
+  documentCount: number;
+}) {
+  const total = progress?.total_documents ?? 0;
+  const processed = progress?.processed_documents ?? 0;
+  const pct = total > 0 ? Math.min(100, Math.max(0, (processed / total) * 100)) : 0;
+
+  return (
+    <section className="space-y-2 border border-zinc-200/70 dark:border-zinc-700/50 rounded-md p-3 bg-zinc-50/60 dark:bg-zinc-900/30">
+      <div className="flex items-start gap-2">
+        <Loader2 className="w-3.5 h-3.5 mt-0.5 animate-spin text-amber-500 flex-shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-[12px] font-medium text-zinc-700 dark:text-zinc-200">
+              {formatIngestPhase(progress?.phase)}
+            </p>
+            {total > 0 && (
+              <span className="text-[11px] text-zinc-400 dark:text-zinc-500 tabular-nums">
+                {processed}/{total}
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+            {formatIngestStats(progress, documentCount)}
+          </p>
+          {progress?.current_path && (
+            <p className="mt-1 font-mono text-[11px] text-zinc-400 dark:text-zinc-500 truncate">
+              {progress.current_path}
+            </p>
+          )}
+        </div>
+      </div>
+      {total > 0 && (
+        <div className="h-1.5 rounded-full bg-zinc-200 dark:bg-zinc-800 overflow-hidden">
+          <div
+            className="h-full rounded-full bg-amber-500 transition-all duration-500"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function formatIngestPhase(phase: string | undefined): string {
+  switch (phase) {
+    case "queued":
+      return "Queued";
+    case "starting":
+      return "Starting ingestion";
+    case "clearing":
+      return "Clearing old chunks";
+    case "listing":
+      return "Discovering documents";
+    case "fetching":
+      return "Reading documents";
+    case "summarizing":
+      return "Summarizing documents";
+    case "embedding":
+      return "Embedding chunks";
+    case "indexing":
+      return "Indexing chunks";
+    case "saving":
+      return "Saving documents";
+    default:
+      return "Syncing";
+  }
+}
+
+function formatIngestStats(
+  progress: SourceIngestProgress | null,
+  documentCount: number,
+): string {
+  if (!progress) {
+    return `${documentCount} document${documentCount === 1 ? "" : "s"} available`;
+  }
+  if (progress.total_documents === 0) {
+    return "Waiting for upstream document list";
+  }
+  return [
+    `${progress.processed_documents} processed`,
+    `${progress.indexed_documents} indexed`,
+    `${progress.skipped_documents} skipped`,
+    `${progress.failed_documents} failed`,
+  ].join(" · ");
 }
 
 function MetaRow({ label, children }: { label: string; children: React.ReactNode }) {

@@ -25,7 +25,7 @@ from src.catalog import (
     SourceRepository,
     TeamRepository,
 )
-from src.catalog.models import SourceCreate, SourceKind, SourceScope
+from src.catalog.models import SourceCreate, SourceKind, SourceScope, SourceStatus
 
 PG_URL = os.environ.get("PRISM_TEST_POSTGRES_URL") or os.environ.get("PRISM_POSTGRES_URL")
 
@@ -91,6 +91,7 @@ def test_catalog_bootstrap_creates_tables(fresh_dsn: str):
                     "services",
                     "sources",
                     "source_secrets",
+                    "source_ingest_progress",
                     "kg_documents",
                     "kg_dependencies",
                     "document_registry",
@@ -176,6 +177,62 @@ def test_source_create_enforces_one_scope(fresh_dsn: str):
         finally:
             await sources.close()
             await teams.close()
+            await orgs.close()
+
+    asyncio.run(_run())
+
+
+def test_source_ingest_progress_roundtrip(fresh_dsn: str):
+    async def _run() -> None:
+        orgs = await OrgRepository.create(dsn=fresh_dsn)
+        sources = await SourceRepository.create(dsn=fresh_dsn)
+        try:
+            org = await orgs.insert("Acme")
+            src = await sources.insert(
+                SourceCreate(
+                    scope=SourceScope.ORG,
+                    scope_id=org.id,
+                    kind=SourceKind.GITLAB,
+                    name="org docs",
+                    config={"project_path": "acme/docs"},
+                )
+            )
+
+            claimed = await sources.try_claim_for_sync(src.id)
+            assert claimed is True
+            assert (await sources.get(src.id)).status == SourceStatus.SYNCING
+
+            progress = await sources.get_ingest_progress(src.id)
+            assert progress is not None
+            assert progress["phase"] == "queued"
+            assert progress["processed_documents"] == 0
+            assert progress["finished_at"] is None
+
+            await sources.update_ingest_progress(
+                src.id,
+                phase="fetching",
+                total_documents=3,
+                processed_documents=1,
+                indexed_documents=0,
+                skipped_documents=1,
+                failed_documents=0,
+                current_path="acme/docs@main:README.md",
+            )
+            progress = await sources.get_ingest_progress(src.id)
+            assert progress is not None
+            assert progress["phase"] == "fetching"
+            assert progress["total_documents"] == 3
+            assert progress["processed_documents"] == 1
+            assert progress["current_path"] == "acme/docs@main:README.md"
+
+            await sources.finish_ingest_progress(src.id, phase="complete")
+            progress = await sources.get_ingest_progress(src.id)
+            assert progress is not None
+            assert progress["phase"] == "complete"
+            assert progress["current_path"] is None
+            assert progress["finished_at"] is not None
+        finally:
+            await sources.close()
             await orgs.close()
 
     asyncio.run(_run())

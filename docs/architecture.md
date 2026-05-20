@@ -322,6 +322,7 @@ sequenceDiagram
 | **PostgreSQL / kg_documents** | One row per ingested document with scope pointers + source pointer. |
 | **PostgreSQL / kg_dependencies** | User-managed service-to-service edges by UUID. Written by the service detail page UI, not by ingestion. |
 | **PostgreSQL / document_registry** | Idempotency (content hash) + which source ingested each doc. |
+| **PostgreSQL / source_ingest_progress** | Live, best-effort counters and phase labels for currently running or most recent source ingests. |
 | **PostgreSQL / analyses** | Analysis history + LangGraph checkpoints. Unchanged by Phase 1. |
 | **Redis** | Present in local Docker stack as auxiliary infrastructure. |
 

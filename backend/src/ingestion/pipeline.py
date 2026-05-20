@@ -154,8 +154,33 @@ class IngestionPipeline:
             raise ValueError(f"No connector registered for kind '{source_config.kind}'")
 
         await self.source_repo.mark_status(source_id, SourceStatus.SYNCING, last_error=None)
+        try:
+            await self.source_repo.begin_ingest_progress(source_id, phase="starting")
+        except Exception as progress_err:
+            log.warning(
+                "ingest_progress_begin_failed",
+                source_id=str(source_id),
+                error=str(progress_err)[:200],
+            )
 
         if force:
+            try:
+                await self.source_repo.update_ingest_progress(
+                    source_id,
+                    phase="clearing",
+                    total_documents=0,
+                    processed_documents=0,
+                    indexed_documents=0,
+                    skipped_documents=0,
+                    failed_documents=0,
+                )
+            except Exception as progress_err:
+                log.warning(
+                    "ingest_progress_update_failed",
+                    source_id=str(source_id),
+                    phase="clearing",
+                    error=str(progress_err)[:200],
+                )
             delete_by_source_id(source_id, self.os_client)
 
         connector = connector_cls(source_config)
@@ -168,6 +193,15 @@ class IngestionPipeline:
                 SourceStatus.ERROR,
                 last_error=str(e)[:500],
             )
+            try:
+                await self.source_repo.finish_ingest_progress(source_id, phase="failed")
+            except Exception as progress_err:
+                log.warning(
+                    "ingest_progress_finish_failed",
+                    source_id=str(source_id),
+                    phase="failed",
+                    error=str(progress_err)[:200],
+                )
             raise
         finally:
             await connector.aclose()
@@ -204,6 +238,7 @@ class IngestionPipeline:
                 last_error="; ".join(parts)[:500],
                 last_ingested_at=datetime.now(tz=timezone.utc),
             )
+            await self._finish_progress(source_id, stats, phase="failed")
         else:
             await self.source_repo.mark_status(
                 source_id,
@@ -211,6 +246,7 @@ class IngestionPipeline:
                 last_error=None,
                 last_ingested_at=datetime.now(tz=timezone.utc),
             )
+            await self._finish_progress(source_id, stats, phase="complete")
         stats["source_id"] = str(source_id)
         return stats
 
@@ -238,6 +274,53 @@ class IngestionPipeline:
 
         raise ValueError(f"Source {source.id} has no scope set")
 
+    async def _record_progress(
+        self,
+        source: Source,
+        stats: dict[str, Any],
+        *,
+        phase: str,
+        current_path: str | None = None,
+    ) -> None:
+        try:
+            await self.source_repo.update_ingest_progress(
+                source.id,
+                phase=phase,
+                total_documents=int(stats.get("total", 0) or 0),
+                processed_documents=int(stats.get("processed", 0) or 0),
+                indexed_documents=int(stats.get("indexed", 0) or 0),
+                skipped_documents=int(stats.get("skipped", 0) or 0),
+                failed_documents=int(stats.get("failed", 0) or 0),
+                current_path=current_path,
+            )
+        except Exception as e:
+            log.warning(
+                "ingest_progress_update_failed",
+                source_id=str(source.id),
+                phase=phase,
+                error=str(e)[:200],
+            )
+
+    async def _finish_progress(
+        self,
+        source_id: UUID,
+        stats: dict[str, Any],
+        *,
+        phase: str,
+    ) -> None:
+        try:
+            source = await self.source_repo.get(source_id)
+            if source is not None:
+                await self._record_progress(source, stats, phase=phase)
+            await self.source_repo.finish_ingest_progress(source_id, phase=phase)
+        except Exception as e:
+            log.warning(
+                "ingest_progress_finish_failed",
+                source_id=str(source_id),
+                phase=phase,
+                error=str(e)[:200],
+            )
+
     async def _ingest_with_connector(
         self,
         connector,
@@ -248,6 +331,7 @@ class IngestionPipeline:
     ) -> dict[str, Any]:
         stats: dict[str, Any] = {
             "total": 0,
+            "processed": 0,
             "indexed": 0,
             "skipped": 0,
             "failed": 0,
@@ -259,6 +343,7 @@ class IngestionPipeline:
         }
 
         try:
+            await self._record_progress(source, stats, phase="listing")
             # Connectors are sync httpx today (GitLab pages projects + tree
             # walks via blocking calls); push the listing into a worker
             # thread so the event loop keeps serving API requests during
@@ -270,6 +355,7 @@ class IngestionPipeline:
 
         log.info("documents_found", source=source.name, count=len(doc_refs))
         stats["total"] = len(doc_refs)
+        await self._record_progress(source, stats, phase="fetching")
 
         # Tombstone phase runs FIRST -- before any parse/embed/index work --
         # so paths missing from the upstream listing get cleaned up even
@@ -284,6 +370,9 @@ class IngestionPipeline:
         log.info("phase_1_parse_chunk", source=source.name, total=len(doc_refs))
         for idx, ref in enumerate(doc_refs, start=1):
             try:
+                await self._record_progress(
+                    source, stats, phase="fetching", current_path=ref.source_path
+                )
                 log.info(
                     "fetch_document_start",
                     source=source.name,
@@ -320,6 +409,13 @@ class IngestionPipeline:
                     )
                     if existing and existing["content_hash"] == content_hash:
                         stats["skipped"] += 1
+                        stats["processed"] += 1
+                        await self._record_progress(
+                            source,
+                            stats,
+                            phase="fetching",
+                            current_path=ref.source_path,
+                        )
                         continue
 
                     if existing:
@@ -363,11 +459,18 @@ class IngestionPipeline:
                     # not silent, but don't tank the source status.
                     stats["skipped_empty"] += 1
                     stats["skipped"] += 1
+                    stats["processed"] += 1
                     log.warning(
                         "document_parse_empty_skipped",
                         source=source.name,
                         index=idx,
                         path=ref.source_path,
+                    )
+                    await self._record_progress(
+                        source,
+                        stats,
+                        phase="fetching",
+                        current_path=ref.source_path,
                     )
                     continue
 
@@ -409,12 +512,26 @@ class IngestionPipeline:
                         replaces_document_id=replaces_document_id,
                     )
                 )
+                stats["processed"] += 1
+                await self._record_progress(
+                    source,
+                    stats,
+                    phase="fetching",
+                    current_path=ref.source_path,
+                )
 
             except Exception as e:  # noqa: BLE001
                 log.error("document_parse_failed", path=ref.source_path, error=str(e))
                 stats["failed"] += 1
+                stats["processed"] += 1
                 stats["failures"].append(
                     {"path": ref.source_path, "reason": f"parse: {str(e)[:200]}"}
+                )
+                await self._record_progress(
+                    source,
+                    stats,
+                    phase="fetching",
+                    current_path=ref.source_path,
                 )
 
         if not prepared:
@@ -424,6 +541,7 @@ class IngestionPipeline:
         # Best-effort summary chunks. Re-stamp scope after attach --
         # summary chunks come back unscoped and the org_id filter on
         # retrieval would otherwise hide them.
+        await self._record_progress(source, stats, phase="summarizing")
         summary_count = await attach_summary_chunks(prepared)
         if summary_count:
             for doc in prepared:
@@ -435,6 +553,7 @@ class IngestionPipeline:
             )
 
         log.info("phase_2_embed", source=source.name, documents=len(prepared))
+        await self._record_progress(source, stats, phase="embedding")
         all_chunks: list[Chunk] = []
         for doc in prepared:
             all_chunks.extend(doc.chunks)
@@ -448,6 +567,7 @@ class IngestionPipeline:
         log.info("embedding_complete", total_chunks=len(all_chunks))
 
         log.info("phase_3_index", source=source.name, chunks=len(all_chunks))
+        await self._record_progress(source, stats, phase="indexing")
         indexed_count, index_errors = await asyncio.to_thread(
             index_chunks, all_chunks, self.os_client, source_id=source.id
         )
@@ -467,6 +587,12 @@ class IngestionPipeline:
         log.info("phase_4_graph", source=source.name, documents=len(prepared))
         for doc in prepared:
             try:
+                await self._record_progress(
+                    source,
+                    stats,
+                    phase="saving",
+                    current_path=doc.raw_doc.ref.source_path,
+                )
                 await self.store.add_document(
                     doc.document_id,
                     doc.raw_doc,
@@ -487,6 +613,12 @@ class IngestionPipeline:
                 )
 
                 stats["indexed"] += 1
+                await self._record_progress(
+                    source,
+                    stats,
+                    phase="saving",
+                    current_path=doc.raw_doc.ref.source_path,
+                )
             except Exception as e:  # noqa: BLE001
                 log.error("graph_populate_failed", path=doc.raw_doc.ref.source_path, error=str(e))
                 stats["failed"] += 1
@@ -495,6 +627,12 @@ class IngestionPipeline:
                         "path": doc.raw_doc.ref.source_path,
                         "reason": f"graph_populate: {str(e)[:200]}",
                     }
+                )
+                await self._record_progress(
+                    source,
+                    stats,
+                    phase="saving",
+                    current_path=doc.raw_doc.ref.source_path,
                 )
                 continue
 

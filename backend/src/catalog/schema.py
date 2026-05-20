@@ -78,6 +78,20 @@ CREATE TABLE IF NOT EXISTS source_secrets (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS source_ingest_progress (
+    source_id            UUID PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+    phase                TEXT NOT NULL DEFAULT 'idle',
+    total_documents      INTEGER NOT NULL DEFAULT 0,
+    processed_documents  INTEGER NOT NULL DEFAULT 0,
+    indexed_documents    INTEGER NOT NULL DEFAULT 0,
+    skipped_documents    INTEGER NOT NULL DEFAULT 0,
+    failed_documents     INTEGER NOT NULL DEFAULT 0,
+    current_path         TEXT,
+    started_at           TIMESTAMPTZ,
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at          TIMESTAMPTZ
+);
 """
 
 

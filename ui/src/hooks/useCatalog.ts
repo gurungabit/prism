@@ -350,7 +350,10 @@ export function useDeclaredSource(sourceId: string | undefined) {
 
 const SOURCE_DOCUMENTS_PAGE_SIZE = 50;
 
-export function useSourceDocumentsInfinite(sourceId: string | undefined) {
+export function useSourceDocumentsInfinite(
+  sourceId: string | undefined,
+  refetchWhileSyncing = false,
+) {
   return useInfiniteQuery({
     queryKey: ["source-documents", sourceId],
     enabled: !!sourceId,
@@ -362,6 +365,7 @@ export function useSourceDocumentsInfinite(sourceId: string | undefined) {
       }),
     getNextPageParam: (lastPage) =>
       lastPage.has_more ? lastPage.offset + lastPage.limit : undefined,
+    refetchInterval: refetchWhileSyncing ? 3_000 : false,
     staleTime: 15_000,
   });
 }

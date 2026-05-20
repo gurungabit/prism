@@ -48,6 +48,37 @@ def _row_to_source(row) -> Source:
 
 
 class SourceRepository(CatalogRepo):
+    async def _begin_ingest_progress_on_conn(
+        self,
+        conn,
+        source_id: UUID,
+        *,
+        phase: str,
+    ) -> None:
+        await conn.execute(
+            """
+            INSERT INTO source_ingest_progress (
+                source_id, phase, total_documents, processed_documents,
+                indexed_documents, skipped_documents, failed_documents,
+                current_path, started_at, updated_at, finished_at
+            )
+            VALUES ($1, $2, 0, 0, 0, 0, 0, NULL, now(), now(), NULL)
+            ON CONFLICT (source_id) DO UPDATE SET
+                phase = EXCLUDED.phase,
+                total_documents = 0,
+                processed_documents = 0,
+                indexed_documents = 0,
+                skipped_documents = 0,
+                failed_documents = 0,
+                current_path = NULL,
+                started_at = now(),
+                updated_at = now(),
+                finished_at = NULL
+            """,
+            source_id,
+            phase,
+        )
+
     async def insert(self, payload: SourceCreate) -> Source:
         # Map the (scope, scope_id) discriminator onto exactly one of the
         # nullable foreign keys. This mirrors the CHECK constraint.
@@ -324,16 +355,22 @@ class SourceRepository(CatalogRepo):
         background task.
         """
         async with self.pool.acquire() as conn:
-            result = await conn.execute(
-                """
-                UPDATE sources
-                SET status = 'syncing',
-                    last_error = NULL
-                WHERE id = $1 AND status != 'syncing'
-                """,
-                source_id,
-            )
-            return result.endswith(" 1")
+            async with conn.transaction():
+                result = await conn.execute(
+                    """
+                    UPDATE sources
+                    SET status = 'syncing',
+                        last_error = NULL
+                    WHERE id = $1 AND status != 'syncing'
+                    """,
+                    source_id,
+                )
+                claimed = result.endswith(" 1")
+                if claimed:
+                    await self._begin_ingest_progress_on_conn(
+                        conn, source_id, phase="queued"
+                    )
+                return claimed
 
     async def mark_status(
         self,
@@ -393,6 +430,80 @@ class SourceRepository(CatalogRepo):
                 return int(result.split()[-1])
             except (ValueError, IndexError):
                 return 0
+
+    async def begin_ingest_progress(
+        self,
+        source_id: UUID,
+        *,
+        phase: str = "starting",
+    ) -> None:
+        async with self.pool.acquire() as conn:
+            await self._begin_ingest_progress_on_conn(conn, source_id, phase=phase)
+
+    async def update_ingest_progress(
+        self,
+        source_id: UUID,
+        *,
+        phase: str,
+        total_documents: int,
+        processed_documents: int,
+        indexed_documents: int,
+        skipped_documents: int,
+        failed_documents: int,
+        current_path: str | None = None,
+    ) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE source_ingest_progress
+                SET phase = $2,
+                    total_documents = $3,
+                    processed_documents = $4,
+                    indexed_documents = $5,
+                    skipped_documents = $6,
+                    failed_documents = $7,
+                    current_path = $8,
+                    updated_at = now()
+                WHERE source_id = $1
+                """,
+                source_id,
+                phase,
+                total_documents,
+                processed_documents,
+                indexed_documents,
+                skipped_documents,
+                failed_documents,
+                current_path,
+            )
+
+    async def finish_ingest_progress(self, source_id: UUID, *, phase: str) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE source_ingest_progress
+                SET phase = $2,
+                    current_path = NULL,
+                    updated_at = now(),
+                    finished_at = now()
+                WHERE source_id = $1
+                """,
+                source_id,
+                phase,
+            )
+
+    async def get_ingest_progress(self, source_id: UUID) -> dict[str, Any] | None:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT phase, total_documents, processed_documents,
+                       indexed_documents, skipped_documents, failed_documents,
+                       current_path, started_at, updated_at, finished_at
+                FROM source_ingest_progress
+                WHERE source_id = $1
+                """,
+                source_id,
+            )
+            return dict(row) if row else None
 
     async def count_docs(self, source_id: UUID) -> int:
         """Count documents currently tracked by the source registry."""

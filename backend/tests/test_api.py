@@ -396,6 +396,66 @@ def test_source_move_aborts_when_chunk_cleanup_fails(client: TestClient):
     run_ingest.assert_not_awaited()
 
 
+def test_source_status_includes_live_progress(client: TestClient):
+    import uuid as _uuid
+    from datetime import UTC, datetime
+
+    from src.api import catalog_routes
+    from src.catalog.models import Source, SourceKind, SourceStatus
+
+    fake_source_id = _uuid.uuid4()
+    fake_org_id = _uuid.uuid4()
+    started = datetime(2026, 5, 19, 15, 10, tzinfo=UTC)
+    updated = datetime(2026, 5, 19, 15, 11, tzinfo=UTC)
+    source = Source(
+        id=fake_source_id,
+        org_id=fake_org_id,
+        kind=SourceKind.GITLAB,
+        name="docs",
+        config={"project_path": "org/docs"},
+        secret_ref=None,
+        status=SourceStatus.SYNCING,
+        last_ingested_at=None,
+        last_error=None,
+        created_at=started,
+    )
+
+    fake_source_repo = AsyncMock()
+    fake_source_repo.get = AsyncMock(return_value=source)
+    fake_source_repo.count_docs = AsyncMock(return_value=12)
+    fake_source_repo.get_ingest_progress = AsyncMock(
+        return_value={
+            "phase": "fetching",
+            "total_documents": 40,
+            "processed_documents": 18,
+            "indexed_documents": 12,
+            "skipped_documents": 4,
+            "failed_documents": 0,
+            "current_path": "org/docs@main:README.md",
+            "started_at": started,
+            "updated_at": updated,
+            "finished_at": None,
+        }
+    )
+    fake_source_repo.close = AsyncMock()
+
+    with patch.object(
+        catalog_routes.SourceRepository,
+        "create",
+        new=AsyncMock(return_value=fake_source_repo),
+    ):
+        resp = client.get(f"/api/sources/{fake_source_id}/status")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["status"] == "syncing"
+    assert data["document_count"] == 12
+    assert data["progress"]["phase"] == "fetching"
+    assert data["progress"]["processed_documents"] == 18
+    assert data["progress"]["started_at"] == started.isoformat()
+    assert data["progress"]["finished_at"] is None
+
+
 def test_feedback_endpoint_persists_feedback(client: TestClient):
     from src.api import routes
 

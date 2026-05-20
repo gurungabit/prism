@@ -295,6 +295,42 @@ Response shape (list):
 The full document list is **not** inlined here — use the paginated
 documents endpoint below.
 
+#### Source status
+
+```http
+GET /api/sources/{source_id}/status
+```
+
+Used by the source detail page while a background ingest is running. It
+returns the source status, the current registry-backed document count, and
+the latest live progress snapshot:
+
+```json
+{
+  "source_id": "uuid",
+  "status": "syncing",
+  "last_ingested_at": null,
+  "last_error": null,
+  "document_count": 12,
+  "progress": {
+    "phase": "fetching",
+    "total_documents": 40,
+    "processed_documents": 18,
+    "indexed_documents": 12,
+    "skipped_documents": 4,
+    "failed_documents": 0,
+    "current_path": "platform/api@main:README.md",
+    "started_at": "2026-05-19T15:10:00Z",
+    "updated_at": "2026-05-19T15:10:21Z",
+    "finished_at": null
+  }
+}
+```
+
+`progress` is `null` until a source has started its first run. Known phases
+are `queued`, `starting`, `clearing`, `listing`, `fetching`, `summarizing`,
+`embedding`, `indexing`, `saving`, `complete`, and `failed`.
+
 #### Paginated documents
 
 ```http
